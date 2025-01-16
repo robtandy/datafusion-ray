@@ -1,3 +1,4 @@
+use crate::flight::StageFlighter;
 use crate::isolator::{PartitionIsolatorExec, ShadowPartitionNumber};
 use crate::util::{bytes_to_physical_plan, physical_plan_to_bytes, ResultExt};
 use arrow::datatypes::Schema;
@@ -30,8 +31,7 @@ use crate::context::CoordinatorId;
 pub struct PyStage {
     #[pyo3(get)]
     stage_id: String,
-    pub(crate) plan: Arc<dyn ExecutionPlan>,
-    ctx: SessionContext,
+    flighter: StageFlighter,
 }
 
 #[pymethods]

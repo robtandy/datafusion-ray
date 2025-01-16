@@ -188,10 +188,6 @@ class RayStageCoordinator:
                 env[key] = os.environ[key]
         self.runtime_env["env_vars"] = env
 
-    def get_exchanger(self):
-        print(f"Coord: returning exchanger {self.exchanger}")
-        return self.exchanger
-
     def new_stage(
         self,
         stage_id: str,
@@ -289,194 +285,36 @@ class RayStage:
         self.shadow_partition = shadow_partition
         self.max_in_flight_puts = max_in_flight_puts
 
+        # this is where we get the advertised addr for the stage
+        #
+
     def register_schema(self):
         schema = self.pystage.schema()
         ray.get(self.exchanger.put_schema.remote(self.stage_id, schema))
 
-    def consume(self):
-        shadow = (
-            f", shadowing:{self.shadow_partition}"
-            if self.shadow_partition is not None
-            else ""
-        )
-        try:
-            for partition in range(self.pystage.num_output_partitions()):
-                print(
-                    f"RayStage[{self.stage_id}{shadow}] consuming partition:{partition}"
-                )
-                total_rows = 0
-                reader = self.pystage.execute(partition)
-
-                pending_refs = []
-
-                for batch in reader:
-                    total_rows += len(batch)
-                    ipc_batch = batch_to_ipc(batch)
-                    o_ref = ray.put(ipc_batch)
-
-                    # print(
-                    #    f"RayStage[{self.stage_id}{shadow}] produced batch:{print_batch(batch)}"
-                    # )
-
-                    # upload a nested object, list[oref] so that ray does not
-                    # materialize it at the destination.  The shuffler only
-                    # needs to exchange object refs
-                    ref = self.exchanger.put.remote(self.stage_id, partition, [o_ref])
-                    pending_refs.append(ref)
-
-                    if len(pending_refs) >= self.max_in_flight_puts:
-                        _, pending_refs = ray.wait(pending_refs, num_returns=1)
-
-                # before we send the done signal, let our puts finish
-                ray.wait(pending_refs, num_returns=len(pending_refs))
-
-                # signal there are no more batches
-                ray.get(
-                    self.exchanger.done.remote(self.stage_id, partition, self.fraction)
-                )
-
-                self.coord.report_totals.remote(
-                    self.stage_id,
-                    f"{partition}-{self.shadow_partition}",
-                    total_rows,
-                    "write",
-                )
-        except Exception as e:
-            print(
-                f"RayStage[{self.stage_id}{shadow}] Unhandled Exception in consume: {e}!"
-            )
-            raise e
+    def serve(self):
+        self.pystage.serve()
 
 
 @ray.remote(num_cpus=0)
 class RayExchanger:
     def __init__(self):
-        self.queues = {}
+        self.addrs = {}
         self.schemas = {}
         self.dones = {}
 
-    async def put_schema(self, stage_id, schema):
+    def put_schema(self, stage_id, schema):
         key = int(stage_id)
         self.schemas[key] = schema
 
-    async def get_schema(self, stage_id):
+    def get_schema(self, stage_id):
         key = int(stage_id)
         return self.schemas[key]
 
-    async def put(self, stage_id, output_partition, item):
+    def put_addr(self, stage_id: str, output_partition: str, addr: str) -> None:
         key = f"{stage_id}-{output_partition}"
-        if key not in self.queues:
-            self.queues[key] = asyncio.Queue()
+        self.addrs[key] = addr
 
-        q = self.queues[key]
-        await q.put(item)
-        # print(f"RayExchanger got batch for {key}")
-
-    async def done(self, stage_id, output_partition, fraction):
+    def get_addr(self, stage_id: str, output_partition: str) -> None:
         key = f"{stage_id}-{output_partition}"
-        if key not in self.dones:
-            self.dones[key] = 0.0
-        self.dones[key] += fraction
-        print(f"RayExchanger: done for {stage_id}-{output_partition} {self.dones[key]}")
-
-        # round to five decimal places.  We probably wont
-        # have more than 10^5 shadow partitions
-        if round(self.dones[key], 5) >= 1.0:
-            # the partition is done, (all shadows reporting)
-            await self.put(stage_id, output_partition, None)
-
-    async def get(self, stage_id, output_partition):
-        key = f"{stage_id}-{output_partition}"
-        if key not in self.queues:
-            self.queues[key] = asyncio.Queue()
-
-        q = self.queues[key]
-
-        item = await q.get()
-        return item
-
-
-class StageReader:
-    def __init__(self, coordinator_id):
-        print(f"Stage reader init getting coordinator {coordinator_id}")
-        self.coord = ray.get_actor("RayQueryCoordinator:" + coordinator_id)
-        print("Stage reader init got it")
-        ref = self.coord.get_exchanger.remote()
-        print(f"Stage reader init got exchanger ref {ref}")
-        self.exchanger = ray.get(ref)
-        print("Stage reader init got exchanger")
-        self.coordinator_id = coordinator_id
-
-    def reader(
-        self,
-        stage_id: str,
-        partition: int,
-    ) -> pa.RecordBatchReader:
-        try:
-            print(f"reader [s:{stage_id} p:{partition}] getting reader")
-            schema = ray.get(self.exchanger.get_schema.remote(stage_id))
-            ray_iterable = RayIterable(
-                self.exchanger, stage_id, partition, self.coordinator_id
-            )
-            reader = pa.RecordBatchReader.from_batches(schema, ray_iterable)
-            print(f"reader [s:{stage_id} p:{partition}] got it")
-            return reader
-        except Exception as e:
-            print(f"reader [s:{stage_id} p:{partition}] Unhandled Exception! {e}")
-            raise e
-
-
-class RayIterable:
-    def __init__(self, exchanger, stage_id, partition, coordinator_id):
-        self.exchanger = exchanger
-        self.stage_id = stage_id
-        self.partition = partition
-        self.total_rows = 0
-        self.coord = ray.get_actor("RayQueryCoordinator:" + coordinator_id)
-
-    def __next__(self):
-        obj_ref = self.exchanger.get.remote(self.stage_id, self.partition)
-        # print(f"[RayIterable stage:{self.stage_id} p:{self.partition}] got ref")
-        message = ray.get(obj_ref)
-
-        if message is None:
-            raise StopIteration
-
-        # other wise we know its a list of a single object ref
-        ipc_batch = ray.get(message[0])
-
-        batch = ipc_to_batch(ipc_batch)
-        self.total_rows += len(batch)
-        # print(
-        #    f"[RayIterable stage:{self.stage_id} p:{self.partition}] got batch:\n{print_batch(batch)}"
-        # )
-
-        return batch
-
-    def __iter__(self):
-        return self
-
-    def __del__(self):
-        self.coord.report_totals.remote(
-            self.stage_id, self.partition, self.total_rows, "read"
-        )
-
-
-def print_batch(batch) -> str:
-    return tabulate(batch.to_pylist(), headers="keys", tablefmt="simple_grid")
-
-
-def batch_to_ipc(batch: pa.RecordBatch) -> bytes:
-    # sink = pa.BufferOutputStream()
-    # with pa.ipc.new_stream(sink, batch.schema) as writer:
-    #    writer.write_batch(batch)
-
-    # work around for non alignment issue for FFI buffers
-    # return sink.getvalue()
-    return rust_batch_to_ipc(batch)
-
-
-def ipc_to_batch(data) -> pa.RecordBatch:
-    # with pa.ipc.open_stream(data) as reader:
-    #    return reader.read_next_batch()
-    return rust_ipc_to_batch(data)
+        return self.addrs[key]

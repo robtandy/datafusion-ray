@@ -25,6 +25,7 @@ pub use proto::generated::protobuf;
 pub mod codec;
 pub mod context;
 pub mod dataframe;
+pub mod flight;
 pub mod isolator;
 pub mod physical;
 pub mod pystage;
