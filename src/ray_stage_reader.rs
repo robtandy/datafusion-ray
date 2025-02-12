@@ -138,8 +138,10 @@ impl ExecutionPlan for RayStageReaderExec {
 
             let mut streams = vec![];
             for mut client in clients {
+                trace!("{name} Getting flight stream");
                 match client.do_get(ticket.clone()).await {
                     Ok(flight_stream) => {
+                        trace!("{name} Got flight stream");
                         let rbr_stream = RecordBatchStreamAdapter::new(schema.clone(),
                             flight_stream
                                 .map_err(|e| internal_datafusion_err!("Error consuming flight stream: {}", e)));

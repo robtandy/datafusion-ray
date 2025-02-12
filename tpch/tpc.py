@@ -33,6 +33,7 @@ def make_ctx(
     concurrency: int,
     batch_size: int,
     partitions_per_worker: int | None,
+    worker_pool_min: int,
     listing_tables: bool,
 ):
 
@@ -51,7 +52,11 @@ def make_ctx(
     # use ray job submit
     ray.init(runtime_env=runtime_env)
 
-    ctx = RayContext(batch_size=batch_size, partitions_per_worker=partitions_per_worker)
+    ctx = RayContext(
+        batch_size=batch_size,
+        partitions_per_worker=partitions_per_worker,
+        worker_pool_min=worker_pool_min,
+    )
 
     ctx.set("datafusion.execution.target_partitions", f"{concurrency}")
     # ctx.set("datafusion.execution.parquet.pushdown_filters", "true")
@@ -75,19 +80,19 @@ def main(
     batch_size: int,
     query: str,
     partitions_per_worker: int | None,
-    validate: bool,
+    worker_pool_min: int,
     listing_tables,
 ) -> None:
     ctx = make_ctx(
-        data_path, concurrency, batch_size, partitions_per_worker, listing_tables
+        data_path,
+        concurrency,
+        batch_size,
+        partitions_per_worker,
+        worker_pool_min,
+        listing_tables,
     )
     df = ctx.sql(query)
-    for stage in df.stages():
-        print(
-            f"Stage {stage.stage_id} output partitions:{stage.num_output_partitions} partition_groups: {stage.partition_groups}"
-        )
-        print(stage.execution_plan().display_indent())
-
+    time.sleep(3)
     df.show()
 
 
@@ -110,7 +115,11 @@ if __name__ == "__main__":
         type=int,
         help="Max partitions per Stage Service Worker",
     )
-    parser.add_argument("--validate", action="store_true")
+    parser.add_argument(
+        "--worker-pool-min",
+        type=int,
+        help="Minimum number of RayStages to keep in pool",
+    )
     parser.add_argument("--listing-tables", action="store_true")
     args = parser.parse_args()
 
@@ -125,6 +134,6 @@ if __name__ == "__main__":
         int(args.batch_size),
         query,
         args.partitions_per_worker,
-        args.validate,
+        args.worker_pool_min,
         args.listing_tables,
     )
