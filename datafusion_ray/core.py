@@ -23,8 +23,10 @@ import os
 import pyarrow as pa
 import asyncio
 import ray
-import uuid
+import json
 import time
+
+from .friendly import new_friendly_name
 
 from datafusion_ray._datafusion_ray_internal import (
     RayContext as RayContextInternal,
@@ -65,15 +67,11 @@ def call_sync(coro):
     """call a coroutine in the current event loop or run a new one, and synchronously
     return the result"""
     try:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        else:
-            return loop.run_until_complete(coro)
-    except Exception as e:
-        log.error(f"Error in call: {e}")
-        log.exception(e)
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    else:
+        return loop.run_until_complete(coro)
 
 
 # work around for https://github.com/ray-project/ray/issues/31606
@@ -82,14 +80,21 @@ async def _ensure_coro(maybe_obj_ref):
 
 
 async def wait_for(coros, name=""):
+    """Wait for all coros to complete and return their results.
+    Does not preserve ordering."""
+
     return_values = []
     # wrap the coro in a task to work with python 3.10 and 3.11+ where asyncio.wait semantics
     # changed to not accept any awaitable
+    start = time.time()
     done, _ = await asyncio.wait([asyncio.create_task(_ensure_coro(c)) for c in coros])
+    end = time.time()
+    log.info(f"waiting for {name} took {end - start}s")
     for d in done:
         e = d.exception()
         if e is not None:
             log.error(f"Exception waiting {name}: {e}")
+            raise e
         else:
             return_values.append(d.result())
     return return_values
@@ -106,7 +111,7 @@ class RayStagePool:
         self.min_workers = min_workers
         self.max_workers = max_workers
 
-        # a map of stage_key (a uuid) to stage actor reference
+        # a map of stage_key (a random identifier) to stage actor reference
         self.pool = {}
         # a map of stage_key to listening address
         self.addrs = {}
@@ -145,35 +150,52 @@ class RayStagePool:
             await self._wait_for_serve()
             self.stages_ready.set()
 
-    def acquire(self, num=1):
+    async def wait_for_ready(self):
+        await self.stages_ready.wait()
+
+    async def acquire(self, need=1):
         stage_keys = []
-        if len(self.available) >= num:
-            for _ in range(num):
-                stage_key = self.available.pop()
-                self.acquired.add(stage_key)
 
-                stage_keys.append(stage_key)
+        have = len(self.available)
+        total = len(self.available) + len(self.acquired)
+        can_make = self.max_workers - total
 
-            stages = [self.pool[sk] for sk in stage_keys]
-            addrs = [self.addrs[sk] for sk in stage_keys]
-            return (stages, stage_keys, addrs)
+        need_to_make = need - have
 
-        raise Exception(
-            f"Not enought stages available.  Desired {num}.  Have {len(self.available)}"
-        )
+        if need_to_make > can_make:
+            raise Exception(f"Cannot allocate workers above {self.max_workers}")
 
-    def release(self, stage_key):
-        self.acquired.remove(stage_key)
-        self.available.add(stage_key)
+        if need_to_make > 0:
+            log.debug(f"creating {need_to_make} additional stages")
+            for _ in range(need_to_make):
+                self._new_stage()
+            await wait_for([self.start()], "waiting for created stages")
+
+        assert len(self.available) >= need
+
+        for _ in range(need):
+            stage_key = self.available.pop()
+            self.acquired.add(stage_key)
+
+            stage_keys.append(stage_key)
+
+        stages = [self.pool[sk] for sk in stage_keys]
+        addrs = [self.addrs[sk] for sk in stage_keys]
+        return (stages, stage_keys, addrs)
+
+    def release(self, stage_keys: list[str]):
+        for stage_key in stage_keys:
+            self.acquired.remove(stage_key)
+            self.available.add(stage_key)
 
     def _new_stage(self):
-        stage_key = str(uuid.uuid4())
+        self.stages_ready.clear()
+        stage_key = new_friendly_name()
         log.debug(f"starting stage: {stage_key}")
         stage = RayStage.options(name=f"Stage: {stage_key}").remote(stage_key)
         self.pool[stage_key] = stage
         self.stages_started.add(stage.start_up.remote())
         self.available.add(stage_key)
-        self.stages_ready.clear()
 
     async def _wait_for_stages_started(self):
         log.info("waiting for stages to be ready")
@@ -197,7 +219,7 @@ class RayStagePool:
 
         addrs = await wait_for(refs, "stage addresses")
 
-        for key, addr in zip(stage_keys, addrs):
+        for key, addr in addrs:
             self.addrs[key] = addr
 
         self.need_address = set()
@@ -230,7 +252,7 @@ class RayStage:
         # import this here so ray doesn't try to serialize the rust extension
         from datafusion_ray._datafusion_ray_internal import StageService
 
-        self.stage_service = StageService()
+        self.stage_service = StageService(stage_key)
 
     async def start_up(self):
         # this method is sync
@@ -241,7 +263,7 @@ class RayStage:
         await self.stage_service.all_done()
 
     async def addr(self):
-        return self.stage_service.addr()
+        return (self.stage_key, self.stage_service.addr())
 
     async def update_plan(
         self,
@@ -258,8 +280,9 @@ class RayStage:
         )
 
     async def serve(self):
+        log.info(f"[{self.stage_key}] serving on {self.stage_service.addr()}")
         await self.stage_service.serve()
-        log.info("StageService done serving")
+        log.info(f"[{self.stage_key}] done serving")
 
 
 @dataclass
@@ -283,20 +306,27 @@ class InternalStageData:
     remote_stage: ...  # ray.actor.ActorHandle[RayStage]
     remote_addr: str
 
+    def __str__(self):
+        return f"""Stage: {self.stage_id}, pg: {self.partition_group}, child_stages:{self.child_stage_ids}, listening addr:{self.remote_addr}"""
+
 
 @ray.remote(num_cpus=0)
 class RayContextSupervisor:
     def __init__(
         self,
         worker_pool_min: int,
+        worker_pool_max: int,
     ) -> None:
         log.info(f"Creating RayContextSupervisor worker_pool_min: {worker_pool_min}")
-        self.pool = RayStagePool(worker_pool_min, worker_pool_min)
-        self.stages = {}
+        self.pool = RayStagePool(worker_pool_min, worker_pool_max)
+        self.stages: dict[str, InternalStageData] = {}
         log.info("Created RayContextSupervisor")
 
     async def start(self):
         await self.pool.start()
+
+    async def wait_for_ready(self):
+        await self.pool.wait_for_ready()
 
     async def get_stage_addrs(self, stage_id: int):
         addrs = [
@@ -308,9 +338,13 @@ class RayContextSupervisor:
         self,
         stage_datas: list[StageData],
     ):
-        remote_stages, remote_stage_keys, remote_addrs = self.pool.acquire(
+        if len(self.stages) > 0:
+            self.pool.release(list(self.stages.keys()))
+
+        remote_stages, remote_stage_keys, remote_addrs = await self.pool.acquire(
             len(stage_datas)
         )
+        self.stages = {}
 
         for i, sd in enumerate(stage_datas):
             remote_stage = remote_stages[i]
@@ -330,18 +364,30 @@ class RayContextSupervisor:
         # sort out the mess of who talks to whom and ensure we can supply the correct
         # addresses to each of them
         addrs_by_stage_key = await self.sort_out_addresses()
+        if log.level <= logging.DEBUG:
+            # TODO: string builder here
+            out = ""
+            for stage_key, stage in self.stages.items():
+                out += f"[{stage_key}]: {stage}\n"
+                out += f"child addrs: {addrs_by_stage_key[stage_key]}\n"
+            log.debug(out)
 
         refs = []
         # now tell the stages what they are doing for this query
         for stage_key, isd in self.stages.items():
+            log.info(f"going to update plan for {stage_key}")
+            kid = addrs_by_stage_key[stage_key]
             refs.append(
                 isd.remote_stage.update_plan.remote(
                     isd.stage_id,
-                    addrs_by_stage_key[stage_key],
+                    {stage_id: val["child_addrs"] for (stage_id, val) in kid.items()},
                     isd.partition_group,
                     isd.plan_bytes,
                 )
             )
+        log.info("that's all of them")
+
+        await wait_for(refs, "updating plans")
 
     async def sort_out_addresses(self):
         """Iterate through our stages and gather all of their listening addresses.
@@ -349,14 +395,17 @@ class RayContextSupervisor:
         """
         addrs_by_stage_key = {}
         for stage_key, isd in self.stages.items():
-            stage_addrs = {}
+            stage_addrs = defaultdict(dict)
 
             # using "isd" as shorthand to denote InternalStageData as a reminder
 
             for child_stage_id in isd.child_stage_ids:
                 addrs = defaultdict(list)
-                child_stage_datas = list(
-                    filter(lambda x: x.stage_id == child_stage_id, self.stages.values())
+                child_stage_keys, child_stage_datas = zip(
+                    *filter(
+                        lambda x: x[1].stage_id == child_stage_id,
+                        self.stages.items(),
+                    )
                 )
                 output_partitions = [
                     c_isd.num_output_partitions for c_isd in child_stage_datas
@@ -368,21 +417,26 @@ class RayContextSupervisor:
 
                 for child_stage_isd in child_stage_datas:
                     if child_stage_isd.full_partitions:
-                        for partition in child_stage_isd.partition_group:
+                        for partition in range(output_partitions):
                             # this stage is the definitive place to read this output partition
                             addrs[partition] = [child_stage_isd.remote_addr]
                     else:
-                        for partition in child_stage_isd.partition_group:
+                        for partition in range(output_partitions):
                             # this output partition must be gathered from all stages with this stage_id
                             addrs[partition] = [
                                 c.remote_addr for c in child_stage_datas
                             ]
 
-                stage_addrs[child_stage_id] = addrs
+                stage_addrs[child_stage_id]["child_addrs"] = addrs
+                # not necessary but useful for debug logs
+                stage_addrs[child_stage_id]["stage_keys"] = child_stage_keys
 
             addrs_by_stage_key[stage_key] = stage_addrs
 
         return addrs_by_stage_key
+
+    async def all_done(self):
+        await self.pool.all_done()
 
 
 class RayDataFrame:
@@ -440,7 +494,6 @@ class RayDataFrame:
             reader = self.df.read_final_stage(last_stage_id, last_stage_addrs[0])
             log.debug("got reader")
             self._batches = list(reader)
-            self.supervisor.all_done.remote()
         return self._batches
 
     def show(self) -> None:
@@ -478,6 +531,7 @@ class RayContext:
         prefetch_buffer_size: int = 0,
         partitions_per_worker: int | None = None,
         worker_pool_min: int = 1,
+        worker_pool_max: int = 100,
     ) -> None:
         self.ctx = RayContextInternal()
         self.batch_size = batch_size
@@ -488,11 +542,18 @@ class RayContext:
             name="RayContextSupersisor",
         ).remote(
             worker_pool_min,
+            worker_pool_max,
         )
 
         # start up our super visor and don't check in on it until its
         # time to query, then we will await this ref
-        self.start_ref = self.supervisor.start.remote()
+        start_ref = self.supervisor.start.remote()
+
+        # ensure we are ready
+        s = time.time()
+        call_sync(wait_for([start_ref], "RayContextSupervisor start"))
+        e = time.time()
+        log.info(f"RayContext::__init__ waiting for supervisor to be ready took {e-s}s")
 
     def register_parquet(self, name: str, path: str):
         self.ctx.register_parquet(name, path)
@@ -504,14 +565,6 @@ class RayContext:
 
         df = self.ctx.sql(query)
 
-        # ensure we are ready
-        s = time.time()
-        call_sync(wait_for([self.start_ref], "RayContextSupervisor start"))
-        e = time.time()
-        log.info(
-            f"RayContext: query delayed by {e - s}s, waiting for supervisor, this number should be small!"
-        )
-
         return RayDataFrame(
             df,
             self.supervisor,
@@ -522,5 +575,10 @@ class RayContext:
 
     def set(self, option: str, value: str) -> None:
         self.ctx.set(option, value)
+
+    def __del__(self):
+        log.info("RayContext, cleaning up remote resources")
+        ref = self.supervisor.all_done.remote()
+        call_sync(wait_for([ref], "RayContextSupervisor all done"))
 
     # log.debug("all stage addrs set? or should be")

@@ -14,18 +14,28 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+#
+#
+#
+# This file is useful for running a query against a TPCH dataset.
+#
+# You can run an arbitrary query by passing --query 'select...' or you can run a
+# TPCH query by passing --qnum 1-22.
 
 import argparse
 import ray
-from datafusion import SessionContext, SessionConfig
-from datafusion_ray import RayContext, prettify, runtime_env
-from datetime import datetime
-import json
+from datafusion_ray import RayContext, runtime_env
 import os
+import sys
 import time
 
-import duckdb
-from datafusion.object_store import AmazonS3
+try:
+    import duckdb
+except ImportError:
+    print(
+        "duckdb not installed, which is used in this file for retrieving the TPCH query"
+    )
+    sys.exit(1)
 
 
 def make_ctx(

@@ -64,6 +64,8 @@ pub(crate) struct ServiceClients(pub HashMap<(usize, usize), Mutex<Vec<FlightCli
 /// StageHandler is a [`FlightHandler`] that serves streams of partitions from a hosted Physical Plan
 /// It only responds to the DoGet Arrow Flight method.
 struct StageHandler {
+    /// our name, useful for logging
+    name: String,
     /// Inner state of the handler
     inner: RwLock<Option<StageHandlerInner>>,
 }
@@ -78,10 +80,10 @@ struct StageHandlerInner {
 }
 
 impl StageHandler {
-    pub fn new() -> Self {
+    pub fn new(name: String) -> Self {
         let inner = RwLock::new(None);
 
-        Self { inner }
+        Self { name, inner }
     }
     async fn update_plan(
         &self,
@@ -90,13 +92,6 @@ impl StageHandler {
         plan: Arc<dyn ExecutionPlan>,
         partition_group: Vec<usize>,
     ) -> DFResult<()> {
-        debug!(
-            "StageHandler::new [Stage:{}] partition_group {:?}, plan:\n{}",
-            stage_id,
-            partition_group,
-            display_plan_with_partition_counts(&plan)
-        );
-
         let inner = StageHandlerInner::new(stage_id, stage_addrs, plan, partition_group).await?;
         self.inner.write().replace(inner);
         Ok(())
@@ -219,30 +214,33 @@ impl FlightHandler for StageHandler {
 
         let ticket = request.into_inner();
 
-        let partition = extract_ticket(ticket)
-            .map_err(|e| Status::internal(format!("Unexpected error extracting ticket {e}")))?;
+        let partition = extract_ticket(ticket).map_err(|e| {
+            Status::internal(format!(
+                "{}, Unexpected error extracting ticket {e}",
+                self.name
+            ))
+        })?;
 
         trace!(
-            "StageService[Stage:{}], request for partition {} from {}",
-            self.inner
-                .read()
-                .as_ref()
-                .map(|i| format!("{}", i.stage_id))
-                .unwrap_or("unknown".to_owned()),
+            "{}, request for partition {} from {}",
+            self.name,
             partition,
             remote_addr
         );
 
+        let name = self.name.clone();
         let stream = self
             .inner
             .read()
             .as_ref()
             .map(|inner| make_stream(inner, partition))
-            .ok_or_else(|| Status::internal("No inner found "))??;
+            .ok_or_else(|| Status::internal(format!("{} No inner found", &name)))??;
 
         let out_stream = FlightDataEncoderBuilder::new()
             .build(stream)
-            .map_err(|e| Status::internal(format!("Unexpected error building stream {e}")));
+            .map_err(move |e| {
+                Status::internal(format!("{} Unexpected error building stream {e}", name))
+            });
 
         Ok(Response::new(Box::pin(out_stream)))
     }
@@ -254,6 +252,7 @@ impl FlightHandler for StageHandler {
 /// It only responds to the DoGet Arrow Flight method
 #[pyclass]
 pub struct StageService {
+    name: String,
     listener: Option<TcpListener>,
     handler: Arc<StageHandler>,
     addr: Option<String>,
@@ -264,16 +263,18 @@ pub struct StageService {
 #[pymethods]
 impl StageService {
     #[new]
-    pub fn new() -> PyResult<Self> {
+    pub fn new(name: String) -> PyResult<Self> {
+        let name = format!("[{}]", name);
         let listener = None;
         let addr = None;
 
         let (all_done_tx, all_done_rx) = channel(1);
         let all_done_tx = Arc::new(Mutex::new(all_done_tx));
 
-        let handler = Arc::new(StageHandler::new());
+        let handler = Arc::new(StageHandler::new(name.clone()));
 
         Ok(Self {
+            name,
             listener,
             handler,
             addr,
@@ -302,9 +303,12 @@ impl StageService {
 
     /// get the address of the listing socket for this service
     pub fn addr(&self) -> PyResult<String> {
-        self.addr
-            .clone()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyException, _>("Couldn't get addr"))
+        self.addr.clone().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                "{},Couldn't get addr",
+                self.name
+            ))
+        })
     }
 
     /// signal to the service that we can shutdown
@@ -334,15 +338,26 @@ impl StageService {
     ) -> PyResult<Bound<'a, PyAny>> {
         let plan = bytes_to_physical_plan(&SessionContext::new(), plan_bytes)?;
 
+        debug!(
+            "{} Received New Plan: Stage:{} my addr: {}, partition_group {:?}, stage_addrs:\n{:?}\nplan:\n{}",
+            self.name,
+            stage_id,
+            self.addr()?,
+            partition_group,
+            stage_addrs,
+            display_plan_with_partition_counts(&plan)
+        );
+
         let handler = self.handler.clone();
+        let name = self.name.clone();
         let fut = async move {
             handler
                 .update_plan(stage_id, stage_addrs, plan, partition_group.clone())
                 .await
                 .to_py_err()?;
-            debug!(
-                "StageService [{}:{:?}] updated plan",
-                stage_id, partition_group
+            info!(
+                "{} [stage: {} pg:{:?}] updated plan",
+                name, stage_id, partition_group
             );
             Ok(())
         };
@@ -367,17 +382,9 @@ impl StageService {
         let svc = FlightServiceServer::new(service);
 
         let listener = self.listener.take().unwrap();
-
-        let name = self.handler.stage_id();
-
-        let stage_id = self
-            .handler
-            .stage_id()
-            .map(|i| format!("{}", i))
-            .unwrap_or("unknown".to_owned());
+        let name = self.name.clone();
 
         let serv = async move {
-            trace!("StageService [{}] Serving", stage_id);
             Server::builder()
                 .add_service(svc)
                 .serve_with_incoming_shutdown(
@@ -385,9 +392,8 @@ impl StageService {
                     signal,
                 )
                 .await
-                .inspect_err(|e| error!("StageService [{}] ERROR serving {e}", stage_id))
+                .inspect_err(|e| error!("{}, ERROR serving {e}", name))
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{e}")))?;
-            info!("StageService [{}] DONE serving", stage_id);
             Ok::<(), Box<dyn Error + Send + Sync>>(())
         };
 
