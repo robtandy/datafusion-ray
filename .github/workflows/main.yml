@@ -51,15 +51,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust Toolchain Arm
+      - name: Maybe Setup Rust Toolchain Arm
         if: ${{ matrix.runner == 'ubuntu-24.04-arm' }}
         uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
+        id: rust-toolchain-arm
         with:
           components: clippy,rustfmt
           target: aarch64
 
-      - name: Setup Rust Toolchain x86
+      - name: Maybe Setup Rust Toolchain x86
         if: ${{ matrix.runner != 'ubuntu-24.04-arm' }}
         uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
