@@ -36,9 +36,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          #- ubuntu-24.04
-          - ubuntu-24.04-arm
+        platform:
+          #- image: ubuntu-24.04
+          #  target: x86_64-unknown-linux-musl
+          - image: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
         python-version:
           #- "3.10"
           #- "3.11"
@@ -51,17 +53,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Maybe Setup Rust Toolchain Arm
-        if: ${{ matrix.runner == 'ubuntu-24.04-arm' }}
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain-arm
         with:
-          target: aarch64
-
-      - name: Maybe Setup Rust Toolchain x86
-        if: ${{ matrix.runner != 'ubuntu-24.04-arm' }}
-        uses: dtolnay/rust-toolchain@nightly
-        id: rust-toolchain
+          target: ${{ matrix.platform.target }}
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
