@@ -53,7 +53,7 @@ jobs:
 
       - name: Maybe Setup Rust Toolchain Arm
         if: ${{ matrix.runner == 'ubuntu-24.04-arm' }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain-arm
         with:
           components: clippy,rustfmt
@@ -61,7 +61,7 @@ jobs:
 
       - name: Maybe Setup Rust Toolchain x86
         if: ${{ matrix.runner != 'ubuntu-24.04-arm' }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
           components: clippy,rustfmt
