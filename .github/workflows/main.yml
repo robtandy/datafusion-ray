@@ -56,15 +56,12 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain-arm
         with:
-          components: clippy,rustfmt
           target: aarch64
 
       - name: Maybe Setup Rust Toolchain x86
         if: ${{ matrix.runner != 'ubuntu-24.04-arm' }}
         uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
-        with:
-          components: clippy,rustfmt
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
