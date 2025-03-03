@@ -32,7 +32,7 @@ env:
 
 jobs:
   test-matrix:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform.image }}
     strategy:
       fail-fast: false
       matrix:
