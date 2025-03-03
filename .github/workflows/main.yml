@@ -68,21 +68,17 @@ jobs:
           path: ~/.cargo
           key: cargo-cache-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: setup python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: ${{ matrix.python-version }}
 
       # reset the version of ray in pyproject.toml
       # to agree align with our matrix version
       - name: add ray
         run: |
-          uv add --no-sync-project 'ray[default]==${{ matrix.ray-version}}'
+          uv add --no-sync 'ray[default]==${{ matrix.ray-version}}'
 
       # sync the environment, building everything other than datafusion-ray
       - name: install dependencies
