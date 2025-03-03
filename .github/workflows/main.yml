@@ -112,6 +112,8 @@ jobs:
         run: |
           uv run --no-project python tpch/make_data.py 1 testdata/tpch/
 
+      # run the tpcbench.py file with --validate which will cause
+      # it to exit with an error code if any of the queries do not validate
       - name: validate tpch
         env:
           DATAFUSION_RAY_LOG_LEVEL: debug
