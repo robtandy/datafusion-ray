@@ -17,7 +17,7 @@
   under the License.
 -->
 
-[![Python Validation Tests](https://github.com/robtandy/datafusion-ray/actions/workflows/main.yaml/badge.svg)](https://github.com/robtandy/datafusion-ray/actions/workflows/main.yaml)
+[![Python Validation Tests](https://github.com/robtandy/datafusion-ray/actions/workflows/main.yml/badge.svg)](https://github.com/robtandy/datafusion-ray/actions/workflows/main.yml)
 
 # DataFusion on Ray
 
