@@ -1,0 +1,53 @@
+apiVersion: ray.io/v1alpha1
+kind: RayCluster
+metadata:
+  name: datafusion-ray-cluster
+spec:
+  headGroupSpec:
+    rayStartParams:
+      num-cpus: "0"
+    template:
+      spec:
+        containers:
+          - name: ray-head
+            image: rayproject/ray:2.43.0-py312-cpu
+            imagePullPolicy: IfNotPresent
+            resources:
+              limits:
+                cpu: 8
+                memory: 32Gi
+              requests:
+                cpu: 8
+                memory: 32Gi
+            volumeMounts:
+              - mountPath: /mnt/bigdata
+                name: ray-storage
+        volumes:
+          - name: ray-storage
+            persistentVolumeClaim:
+                claimName: ray-pvc
+  workerGroupSpecs:
+    - replicas: 2
+      groupName: "datafusion-ray"
+      rayStartParams:
+        num-cpus: "5"
+      template:
+        spec:
+          containers:
+            - name: ray-worker
+              image: rayproject/ray:2.43.0-py312
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: 5
+                  memory: 64Gi
+                requests:
+                  cpu: 5
+                  memory: 64Gi
+              volumeMounts:
+                - mountPath: /mnt/bigdata
+                  name: ray-storage
+          volumes:
+            - name: ray-storage
+              persistentVolumeClaim:
+                claimName: ray-pvc
