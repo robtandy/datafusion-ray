@@ -39,6 +39,7 @@ def main(
     worker_pool_min: int,
     listing_tables: bool,
     validate: bool,
+    output_path: str,
     prefetch_buffer_size: int,
 ):
     # Register the tables
@@ -77,7 +78,9 @@ def main(
             ctx.register_parquet(table, path)
 
     current_time_millis = int(datetime.now().timestamp() * 1000)
-    results_path = f"datafusion-ray-tpch-{current_time_millis}.json"
+    results_path = os.path.join(
+        output_path, f"datafusion-ray-tpch-{current_time_millis}.json"
+    )
     print(f"Writing results to {results_path}")
 
     results = {
@@ -169,6 +172,13 @@ if __name__ == "__main__":
         help="Max partitions per Stage Service Worker",
     )
     parser.add_argument(
+        "--output_path",
+        type=str,
+        default=".",
+        help="directory to write output json",
+    )
+
+    parser.add_argument(
         "--prefetch-buffer-size",
         required=False,
         default=0,
@@ -192,5 +202,6 @@ if __name__ == "__main__":
         args.worker_pool_min,
         args.listing_tables,
         args.validate,
+        args.output_path,
         args.prefetch_buffer_size,
     )
