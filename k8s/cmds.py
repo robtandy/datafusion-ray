@@ -3,9 +3,11 @@ import subprocess
 import jinja2
 import click
 import os
+import signal
 import textwrap
 
 Shell = namedtuple("Shell", ["cmd", "desc"])
+BackgroundShell = namedtuple("BackgroundShell", ["cmd", "desc"])
 Template = namedtuple("Template", ["path", "desc"])
 ChangeDir = namedtuple("ChangeDir", ["path", "desc"])
 Venv = namedtuple("Venv", ["cmd", "path", "desc"])
@@ -98,7 +100,7 @@ cmds = {
             """
             while true; do
                 sleep 5
-                STATE=$(kubectl get sparkapp/spark-tpch-bench -o json |jq -r '.status.applicationState.state')"
+                STATE=$(kubectl get sparkapp/spark-tpch-bench -o json |jq -r '.status.applicationState.state')
                 echo  "Checking on job status...got $STATE looking for COMPLETED"
                 if [[ $STATE == "COMPLETED" ]]; then
                     break
@@ -116,8 +118,16 @@ cmds = {
             "kubectl apply -f ray_cluster.yaml",
             "deploying ray cluster",
         ),
+        Shell(
+            "kubectl wait raycluster/datafusion-ray-cluster --for=condition=HeadPodReady",
+            "wait for ray cluster to be ready",
+        ),
         Template("requirements.txt.template", "rewrite requirements.txt.template"),
         Template("ray_job.sh.template", "rewrite ray_job.sh.template"),
+        BackgroundShell(
+            "kubectl port-forward svc/datafusion-ray-cluster-head-svc 8265:8265",
+            "port forwarding from cluster",
+        ),
         Shell(
             ". ./ray_job.sh",
             "running ray job",
@@ -136,6 +146,7 @@ class Runner:
         self.verbose = verbose
         self.cwd = os.getcwd()
         self.venv: str | None = None
+        self.backgrounded = []
 
     def set_cwd(self, path: str):
         if os.path.isabs(path):
@@ -165,6 +176,15 @@ class Runner:
                     click.secho(f"[dry run] {desc} ...")
                     click.secho(f"    {cmd}", fg="yellow")
 
+                case (False, BackgroundShell(cmd, desc)):
+                    self.run_shell_command(
+                        textwrap.dedent(cmd), desc, substitutions, background=True
+                    )
+
+                case (True, BackgroundShell(cmd, desc)):
+                    click.secho(f"[dry run] {desc} ...")
+                    click.secho(f"[backgrounding]    {cmd}", fg="yellow")
+
                 case (False, Template(path, desc)):
                     click.secho(f"{desc} ...")
                     self.process_template(path, ".", substitutions)
@@ -191,7 +211,11 @@ class Runner:
                     raise Exception("Unhandled case in match.  Shouldn't happen")
 
     def run_shell_command(
-        self, command: str, desc: str, substitutions: dict[str, str] | None = None
+        self,
+        command: str,
+        desc: str,
+        substitutions: dict[str, str] | None = None,
+        background: bool = False,
     ):
         click.secho(f"{desc} ...")
         if self.venv:
@@ -211,6 +235,11 @@ class Runner:
             stderr=subprocess.PIPE,
             executable="/bin/bash",
         )
+
+        if background:
+            self.backgrounded.append(process)
+            return
+
         stdout, stderr = process.communicate()
         stdout = stdout.decode()
         stderr = stderr.decode()
@@ -233,3 +262,10 @@ class Runner:
 
         with open(output_path, "w") as f:
             f.write(template.render(substitutions))
+
+    def __del__(self):
+        for process in self.backgrounded:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except Exception as e:
+                print(f"Failed to kill process {process.pid}: {e}")

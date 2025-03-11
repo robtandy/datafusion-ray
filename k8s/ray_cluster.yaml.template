@@ -40,10 +40,10 @@ spec:
               resources:
                 limits:
                   cpu: {{ executor_cpus }}
-                  memory: {{ executor_mem }} Gi
+                  memory: {{ executor_mem }}Gi
                 requests:
                   cpu: {{ executor_cpus }}
-                  memory: {{ executor_mem }} Gi
+                  memory: {{ executor_mem }}Gi
               volumeMounts:
                 - mountPath: /data/
                   name: ray-storage

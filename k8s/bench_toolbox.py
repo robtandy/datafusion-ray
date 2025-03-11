@@ -102,9 +102,9 @@ def bench(**kwargs):
     help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
-def k3s(data_path):
+def k3s(**kwargs):
     assert runner is not None
-    runner.run_commands(cmds.cmds["k3s_setup"], {"data_path": data_path})
+    runner.run_commands(cmds.cmds["k3s_setup"], kwargs)
 
 
 @cli.command(help="Generate TPCH data")
@@ -126,16 +126,9 @@ def k3s(data_path):
     help="TPCH number of partitions for each table",
     required=True,
 )
-def generate(data_path, scale_factor, partitions):
+def generate(**kwargs):
     assert runner is not None
-    runner.run_commands(
-        cmds.cmds["generate"],
-        {
-            "data_path": data_path,
-            "scale_factor": scale_factor,
-            "partitions": partitions,
-        },
-    )
+    runner.run_commands(cmds.cmds["generate"], kwargs)
 
 
 @cli.command(help="just testing of toolbox shell commands that are harmless")
