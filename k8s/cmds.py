@@ -9,6 +9,8 @@ Template = namedtuple("Template", ["path", "desc"])
 ChangeDir = namedtuple("ChangeDir", ["path", "desc"])
 Venv = namedtuple("Venv", ["cmd", "path", "desc"])
 
+MY_DIR = os.path.dirname(os.path.abspath(__file__))
+
 cmds = {
     "echo": [
         Shell("echo hello 1", "echoing first"),
@@ -17,10 +19,14 @@ cmds = {
         Shell("echo hello 3", "echoing third which we wont see"),
     ],
     "k3s_setup": [
-        Shell("curl -sfL https://get.k3s.io | sh -", "Installing K3s"),
+        Shell("sudo curl -sfL https://get.k3s.io | sh -", "Installing K3s"),
         Shell(
-            "chmod a+r /etc/rancher/k3s/k3s.yaml",
+            "sudo chmod a+r /etc/rancher/k3s/k3s.yaml",
             "Allow read access to chmod a+r /etc/rancher/k3s/k3s.yaml",
+        ),
+        Shell(
+            "kubectl get all",
+            "Check for access to cluster",
         ),
         Shell(
             "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
@@ -36,11 +42,11 @@ cmds = {
         ),
         Shell("helm repo update", "Updating helm repos"),
         Shell(
-            "helm install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait",
+            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait",
             "Installing kuberay-operator",
         ),
         Shell(
-            "helm install spark-operator spark-operator/spark-operator",
+            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install spark-operator spark-operator/spark-operator",
             "Installing spark-operator",
         ),
         Template("pvcs.yaml.template", "rewrite pvcs.yaml.template"),
@@ -59,15 +65,15 @@ cmds = {
         ChangeDir("datafusion-benchmarks", "Change to repo dir"),
         Shell("pip install -r requirements.txt", "install repo requirements"),
         ChangeDir("tpch", "Change to tpch dir"),
-        Shell("mkdir {{data_path}}/sf{{scale_factor}}", "make data dir"),
+        Shell("mkdir -p {{data_path}}/sf{{scale_factor}}", "make data dir"),
         Shell("rm -f data", "remove existing symlink if any"),
         Shell("ln -s {{data_path}}/sf{{scale_factor}} data", "symlink data dir"),
         Shell(
-            "python tpchgen.py generate --sf {{scale_factor}} --partitions {{partitions}}",
+            "python tpchgen.py generate --scale-factor {{scale_factor}} --partitions {{partitions}}",
             "generate the data",
         ),
         Shell(
-            "python tpchgen.py convert --sf {{scale_factor}} --partitions {{partitions}}",
+            "python tpchgen.py convert --scale-factor {{scale_factor}} --partitions {{partitions}}",
             "convert the data to parquet",
         ),
     ],
@@ -165,6 +171,7 @@ class Runner:
     def process_template(
         self, template_path: str, output_path: str, substitutions: dict[str, str] | None
     ):
+        template_path = os.path.join(MY_DIR, template_path)
         template = jinja2.Template(open(template_path).read())
 
         with open(output_path, "w") as f:
