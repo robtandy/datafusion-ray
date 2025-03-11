@@ -7,6 +7,7 @@ import os
 Shell = namedtuple("Shell", ["cmd", "desc"])
 Template = namedtuple("Template", ["path", "desc"])
 ChangeDir = namedtuple("ChangeDir", ["path", "desc"])
+Venv = namedtuple("Venv", ["cmd", "desc"])
 
 cmds = {
     "echo": [
@@ -46,6 +47,7 @@ cmds = {
         Shell("kubectl apply -f pvcs.yaml", "Apply pvcs"),
     ],
     "generate": [
+        Venv("virtualenv -p $(which python3) venv", "create and activate virtualenv"),
         Shell(
             "git clone https://github.com/apache/datafusion-benchmarks/",
             "Cloning apache/datafusion-benchmarks",
@@ -72,9 +74,13 @@ class Runner:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self.cwd = os.getcwd()
+        self.venv: str | None = None
 
-    def set_cwd(self, path):
+    def set_cwd(self, path: str):
         self.cwd = path
+
+    def activate_venv(self, path: str):
+        self.venv = path
 
     def run_commands(
         self,
@@ -111,10 +117,19 @@ class Runner:
                 case (True, ChangeDir(path, desc)):
                     click.secho(f"[dry run] {desc} ...")
 
+                case (False, Venv(path, desc)):
+                    click.secho(f"{desc} ...")
+                    self.venv = path
+
+                case (True, Venv(path, desc)):
+                    click.secho(f"[dry run] {desc} ...")
+
                 case _:
                     raise Exception("Unhandled case in match.  Shouldn't happen")
 
     def run_shell_command(self, command):
+        if self.venv:
+            command = f"source {self.venv}/bin/activate && {command}"
         process = subprocess.Popen(
             command,
             shell=True,
