@@ -119,7 +119,7 @@ cmds = {
             "deploying ray cluster",
         ),
         Shell(
-            "kubectl wait raycluster/datafusion-ray-cluster --for=condition=HeadPodReady",
+            "kubectl wait raycluster/datafusion-ray-cluster --for='jsonpath={.status.state}'=ready",
             "wait for ray cluster to be ready",
         ),
         Template("requirements.txt.template", "rewrite requirements.txt.template"),
@@ -225,7 +225,8 @@ class Runner:
             command = jinja2.Template(command).render(substitutions)
 
         if self.verbose:
-            click.secho(f"[Running command] {command}", fg="yellow")
+            back = " background" if background else ""
+            click.secho(f"[Running command{back}] {command}", fg="yellow")
 
         process = subprocess.Popen(
             command,

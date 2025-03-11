@@ -2,6 +2,10 @@
 import click
 
 import cmds
+import os
+import glob
+import json
+import time
 from cmds import Runner
 
 runner: Runner | None = None
@@ -95,6 +99,32 @@ def bench(**kwargs):
     runner.run_commands(cmds.cmds["bench"], kwargs)
 
 
+@click.option(
+    "--data-path",
+    type=str,
+    help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
+    required=True,
+)
+def results(data_path):
+    df_result = json.loads(
+        open(
+            newest_file(glob.glob(os.path.join(data_path, "datafusion-ray*json")))
+        ).read()
+    )
+    spark_result = json.loads(
+        open(newest_file(glob.glob(os.path.join(data_path, "spark-tpch*json")))).read()
+    )
+    total_results = {"spark": spark_result, "df-ray": df_result}
+    total_results["comparison"] = {
+        "spark": "\n".join([spark_result["queries"][i] for i in range(23)]),
+        "df-ray": "\n".join([df_result["queries"][i] for i in range(23)]),
+    }
+
+    ts = time.time()
+    out_path = f"datafusion-ray-spark-comparison-{ts}.json"
+    open(out_path, "w").write(json.dumps(total_results))
+
+
 @cli.command(help="Install k3s and configure it")
 @click.option(
     "--data-path",
@@ -141,6 +171,10 @@ def echo():
 def help():
     """Print the overall help message."""
     click.echo(cli.get_help(click.Context(cli)))
+
+
+def newest_file(files: list[str]):
+    return max(files, key=os.path.getctime)
 
 
 if __name__ == "__main__":

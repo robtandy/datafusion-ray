@@ -174,7 +174,7 @@ if __name__ == "__main__":
         help="partitions per DFRayProcessor",
     )
     parser.add_argument(
-        "--output_path",
+        "--output-path",
         type=str,
         default=".",
         help="directory to write output json",
