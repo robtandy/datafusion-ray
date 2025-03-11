@@ -36,7 +36,7 @@ def main(
     concurrency: int,
     batch_size: int,
     partitions_per_worker: int | None,
-    worker_pool_min: int,
+    processor_pool_min: int,
     listing_tables: bool,
     validate: bool,
     output_path: str,
@@ -61,7 +61,7 @@ def main(
         batch_size=batch_size,
         partitions_per_worker=partitions_per_worker,
         prefetch_buffer_size=prefetch_buffer_size,
-        worker_pool_min=worker_pool_min,
+        processor_pool_min=processor_pool_min,
     )
 
     local = LocalValidator()
@@ -188,9 +188,9 @@ if __name__ == "__main__":
         help="How many batches each stage should eagerly buffer",
     )
     parser.add_argument(
-        "--worker-pool-min",
+        "--processor-pool-min",
         type=int,
-        help="Minimum number of RayStages to keep in pool",
+        help="Minimum number of DFRayProcessors to keep in pool",
     )
 
     args = parser.parse_args()
@@ -201,7 +201,7 @@ if __name__ == "__main__":
         int(args.concurrency),
         int(args.batch_size),
         args.partitions_per_processor,
-        args.worker_pool_min,
+        args.processor_pool_min,
         args.listing_tables,
         args.validate,
         args.output_path,
