@@ -1,60 +1,8 @@
 #!/usr/bin/env python
-import subprocess
-
 import click
 
-import jinja2
-
 import cmds
-from cmds import Shell, Template
-
-
-class Runner:
-    def __init__(self, dry_run: bool = False):
-        self.dry_run = dry_run
-
-    def run_commands(
-        self,
-        commands: list[dict[str, str]],
-        substitutions: dict[str, str] | None = None,
-    ):
-        for command in commands:
-            match (self.dry_run, command):
-                case (False, Shell(cmd, desc)):
-                    click.secho(f"{desc} ...")
-                    return_code, stdout, stderr = self.run_shell_command(cmd)
-                    if return_code == 0:
-                        click.secho(f"    {stdout}", fg="green")
-                    else:
-                        click.secho(f"    {stderr}", fg="red")
-                        exit(1)
-
-                case (True, Shell(cmd, desc)):
-                    click.secho(f"[dry run] {desc} ...")
-                    click.secho(f"    {cmd}", fg="yellow")
-
-                case (False, Template(path, desc)):
-                    self.process_template(path, ".", substitutions)
-
-                case (True, Template(path, desc)):
-                    click.secho(f"[dry run] {desc} ...")
-                    click.secho(f"    {path} subs:{substitutions}", fg="yellow")
-
-    def run_shell_command(self, command):
-        process = subprocess.Popen(
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        stdout, stderr = process.communicate()
-        return process.returncode, stdout.decode(), stderr.decode()
-
-    def process_template(
-        self, template_path: str, output_path: str, substitutions: dict[str, str] | None
-    ):
-        template = jinja2.Template(open(template_path).read())
-
-        with open(output_path, "w") as f:
-            f.write(template.render(substitutions))
-
+from cmds import Runner
 
 runner: Runner | None = None
 

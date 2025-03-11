@@ -9,18 +9,18 @@ spec:
   mode: cluster
   image: spark:3.5.3
   imagePullPolicy: IfNotPresent
-  mainApplicationFile: local:///mnt/bigdata/spark_tpcbench.py
-  arguments: 
-    - --name 
+  mainApplicationFile: local:///data/spark_tpcbench.py
+  arguments:
+    - --name
     - spark
-    - --benchmark 
+    - --benchmark
     - tpch
-    - --data 
-    - /mnt/bigdata/sf100
-    - --queries 
-    - /mnt/bigdata/queries
-    - --output 
-    - /mnt/bigdata/
+    - --data
+    - /data/sf100
+    - --queries
+    - /data/queries
+    - --output
+    - /data/
     - --concurrency
     - "16"
   sparkVersion: 3.5.3
@@ -29,17 +29,17 @@ spec:
     memory: "32g"
     serviceAccount: spark-operator-spark
     volumeMounts:
-    - name: spark-local-dir-spark-vol
-      mountPath: /mnt/bigdata
+      - name: spark-local-dir-spark-vol
+        mountPath: /data
   executor:
     instances: 2
     cores: 5
     memory: "60g"
     memoryOverhead: "4g"
     volumeMounts:
-    - name: spark-local-dir-spark-vol
-      mountPath: /mnt/bigdata
+      - name: spark-local-dir-spark-vol
+        mountPath: /data
   volumes:
     - name: spark-local-dir-spark-vol
-      persistentVolumeClaim: 
+      persistentVolumeClaim:
         claimName: ray-pvc

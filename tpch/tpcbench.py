@@ -109,7 +109,6 @@ def main(
         statements = list(
             filter(lambda x: len(x) > 0, map(lambda x: x.strip(), sql.split(";")))
         )
-        print(f"statements = {statements}")
 
         start_time = time.time()
         all_batches = []
