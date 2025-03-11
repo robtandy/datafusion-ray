@@ -8,8 +8,8 @@ runner: Runner | None = None
 
 
 @click.group()
-@click.option("--dry-run", is_flag=True)
-@click.option("-v", "--verbose", is_flag=True)
+@click.option("--dry-run", is_flag=True, help="show commands but do not execute")
+@click.option("-v", "--verbose", is_flag=True, help="show verbose output")
 def cli(dry_run: bool, verbose: bool):
     global runner
     runner = Runner(dry_run, verbose)
