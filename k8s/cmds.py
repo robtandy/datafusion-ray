@@ -114,7 +114,7 @@ class Runner:
 
                 case (False, ChangeDir(path, desc)):
                     click.secho(f"{desc} ...")
-                    self.cwd = path
+                    self.set_cwd(path)
 
                 case (True, ChangeDir(path, desc)):
                     click.secho(f"[dry run] {desc} ...")
@@ -143,6 +143,8 @@ class Runner:
             executable="/bin/bash",
         )
         stdout, stderr = process.communicate()
+        stdout = stdout.decode()
+        stderr = stderr.decode()
 
         if process.returncode == 0:
             click.secho(f"    {stdout}", fg="green")
