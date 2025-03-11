@@ -81,7 +81,10 @@ class Runner:
         self.venv: str | None = None
 
     def set_cwd(self, path: str):
-        self.cwd = path
+        if os.path.isabs(path):
+            self.cwd = path
+        else:
+            self.cwd = os.path.join(self.cwd, path)
 
     def activate_venv(self, path: str):
         self.venv = path
@@ -92,19 +95,10 @@ class Runner:
         substitutions: dict[str, str] | None = None,
     ):
 
-        def do_a_command(cmd: str, desc: str):
-            click.secho(f"{desc} ...")
-            return_code, stdout, stderr = self.run_shell_command(cmd)
-            if return_code == 0:
-                click.secho(f"    {stdout}", fg="green")
-            else:
-                click.secho(f"    {stderr}", fg="red")
-                exit(1)
-
         for command in commands:
             match (self.dry_run, command):
                 case (False, Shell(cmd, desc)):
-                    do_a_command(cmd, desc)
+                    self.run_shell_command(cmd, desc)
 
                 case (True, Shell(cmd, desc)):
                     click.secho(f"[dry run] {desc} ...")
@@ -126,7 +120,7 @@ class Runner:
                     click.secho(f"[dry run] {desc} ...")
 
                 case (False, Venv(cmd, path, desc)):
-                    do_a_command(cmd, desc)
+                    self.run_shell_command(cmd, desc)
                     self.venv = os.path.abspath(path)
 
                 case (True, Venv(cmd, path, desc)):
@@ -135,7 +129,8 @@ class Runner:
                 case _:
                     raise Exception("Unhandled case in match.  Shouldn't happen")
 
-    def run_shell_command(self, command):
+    def run_shell_command(self, command: str, desc: str):
+        click.secho(f"{desc} ...")
         if self.venv:
             venv_path = os.path.join(self.cwd, self.venv, "bin/activate")
             command = f"source {venv_path} && {command}"
@@ -148,7 +143,13 @@ class Runner:
             executable="/bin/bash",
         )
         stdout, stderr = process.communicate()
-        return process.returncode, stdout.decode(), stderr.decode()
+
+        if process.returncode == 0:
+            click.secho(f"    {stdout}", fg="green")
+        else:
+            click.secho(f"    {stderr}", fg="red")
+            click.secho(f"Error running command {command}")
+            exit(1)
 
     def process_template(
         self, template_path: str, output_path: str, substitutions: dict[str, str] | None
