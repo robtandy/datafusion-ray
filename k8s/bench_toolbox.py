@@ -64,6 +64,32 @@ def cli(dry_run: bool, verbose: bool):
     help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
+@click.option(
+    "--concurrency",
+    type=int,
+    help="DFRay only.  The number of target partitions to use in planning",
+    required=True,
+)
+@click.option(
+    "--partitions-per-processor",
+    type=int,
+    help="how many partitions (out of [concurrency] value to host in each DFRayProcessor",
+    required=True,
+)
+@click.option(
+    "--processor-pool-min",
+    type=int,
+    help="minimum number of DFRayProcessrs to allocate in a pool for use by queries",
+    required=True,
+)
+@click.option(
+    "--df-ray-version", type=str, help="version number of DFRay to use", required=True
+)
+@click.option(
+    "--test-pypi",
+    is_flag=True,
+    help="use the test.pypi upload of DFRay",
+)
 def bench(**kwargs):
     assert runner is not None
     runner.run_commands(cmds.cmds["bench"], kwargs)

@@ -3,6 +3,7 @@ import subprocess
 import jinja2
 import click
 import os
+import textwrap
 
 Shell = namedtuple("Shell", ["cmd", "desc"])
 Template = namedtuple("Template", ["path", "desc"])
@@ -10,6 +11,8 @@ ChangeDir = namedtuple("ChangeDir", ["path", "desc"])
 Venv = namedtuple("Venv", ["cmd", "path", "desc"])
 
 MY_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# TODO: assert that commands we require like python3, jq, curl, are all present
 
 cmds = {
     "echo": [
@@ -80,16 +83,48 @@ cmds = {
     "bench": [
         Template("spark_job.yaml.template", "rewrite spark_job.yaml.template"),
         Shell(
-            "cp {{ MY_DIR }}/spark_tpcbench.py {{ data_dir }}",
+            "cp {{ MY_DIR }}/spark_tpcbench.py {{ data_path }}",
             "copy spark_tpcbench.py to data_path dir",
         ),
         Shell(
-            "cp -a {{ MY_DIR }}/../tpch/queries {{ data_dir }}",
+            "cp -a {{ MY_DIR }}/../tpch/queries {{ data_path }}",
             "copy tpch queries to data_path dir",
         ),
         Shell(
             "kubectl apply -f spark_job.yaml",
             "Submit spark job",
+        ),
+        Shell(
+            """
+            while true; do
+                sleep 5
+                STATE=$(kubectl get sparkapp/spark-tpch-bench -o json |jq -r '.status.applicationState.state')"
+                echo  "Checking on job status...got $STATE looking for COMPLETED"
+                if [[ $STATE == "COMPLETED" ]]; then
+                    break
+                fi
+            done
+            """,
+            "checking on job status",
+        ),
+        Shell(
+            "kubectl delete -f spark_job.yaml",
+            "tear down job",
+        ),
+        Template("ray_cluster.yaml.template", "rewrite ray_cluster.yaml.template"),
+        Shell(
+            "kubectl apply -f ray_cluster.yaml",
+            "deploying ray cluster",
+        ),
+        Template("requirements.txt.template", "rewrite requirements.txt.template"),
+        Template("ray_job.sh.template", "rewrite ray_job.sh.template"),
+        Shell(
+            ". ./ray_job.sh",
+            "running ray job",
+        ),
+        Shell(
+            "kubectl delete -f ray_cluster.yaml",
+            "tear down ray cluster",
         ),
     ],
 }
@@ -124,7 +159,7 @@ class Runner:
         for command in commands:
             match (self.dry_run, command):
                 case (False, Shell(cmd, desc)):
-                    self.run_shell_command(cmd, desc, substitutions)
+                    self.run_shell_command(textwrap.dedent(cmd), desc, substitutions)
 
                 case (True, Shell(cmd, desc)):
                     click.secho(f"[dry run] {desc} ...")

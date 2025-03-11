@@ -32,7 +32,7 @@ spec:
   executor:
     instances: {{ executor_num }}
     cores: {{ executor_cpus }}
-    memory: "{{ executor_mem }}g"
+    memory: "{{ executor_mem - executor_overhead_mem }}g"
     memoryOverhead: "{{ executor_overhead_mem }}g"
     volumeMounts:
       - name: spark-local-dir-spark-vol
