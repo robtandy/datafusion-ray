@@ -77,6 +77,13 @@ cmds = {
             "convert the data to parquet",
         ),
     ],
+    "bench": [
+        Template("spark_job.yaml.template", "rewrite spark_job.yaml.template"),
+        Shell(
+            "kubectl apply -f spark_job.yaml",
+            "Submit spark job",
+        ),
+    ],
 }
 
 
@@ -169,9 +176,12 @@ class Runner:
             exit(1)
 
     def process_template(
-        self, template_path: str, output_path: str, substitutions: dict[str, str] | None
+        self, template_name: str, output_path: str, substitutions: dict[str, str] | None
     ):
-        template_path = os.path.join(MY_DIR, template_path)
+        template_out = template_name[: template_name.index(".template")]
+        output_path = os.path.join(output_path, template_out)
+        template_path = os.path.join(MY_DIR, template_name)
+
         template = jinja2.Template(open(template_path).read())
 
         with open(output_path, "w") as f:

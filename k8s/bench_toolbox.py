@@ -23,25 +23,44 @@ def cli(dry_run: bool, verbose: bool):
     required=True,
 )
 @click.option(
-    "--driver_cpu",
+    "--driver_cpus",
     type=int,
-    help="how much cpu to allocate to the driver[head] node.",
+    help="how much cpu to allocate to the driver[ray head] node.",
+    required=True,
+)
+@click.option(
+    "--driver_mem",
+    type=int,
+    help="how much memory (GiB) to allocate to the executor[ray worker] nodes.",
     required=True,
 )
 @click.option(
     "--executor_mem",
     type=int,
-    help="how much memory (GiB) to allocate to the executor[worker] nodes.",
+    help="how much memory (GiB) to allocate to the executor[ray worker] nodes.",
+    required=True,
+)
+@click.option(
+    "--executor_overhead_mem",
+    type=int,
+    help="how much memory (GiB) to allocate to the executor overhead.  Not used on ray.  Will be subtracted from executor_mem",
     required=True,
 )
 @click.option(
     "--executor_cpu",
     type=int,
-    help="how much cpu to allocate to the executor[worker] nodes.",
+    help="how much cpu to allocate to the executor[ray worker] nodes.",
     required=True,
 )
-def bench(driver_mem, driver_cpu, executor_mem, executor_cpu):
-    pass
+@click.option(
+    "--executor_num",
+    type=int,
+    help="how many executors[ray workers] to start",
+    required=True,
+)
+def bench(**kwargs):
+    assert runner is not None
+    runner.run_commands(cmds.cmds["bench"], kwargs)
 
 
 @cli.command(help="Install k3s and configure it")
