@@ -7,7 +7,7 @@ import os
 Shell = namedtuple("Shell", ["cmd", "desc"])
 Template = namedtuple("Template", ["path", "desc"])
 ChangeDir = namedtuple("ChangeDir", ["path", "desc"])
-Venv = namedtuple("Venv", ["cmd", "desc"])
+Venv = namedtuple("Venv", ["cmd", "path", "desc"])
 
 cmds = {
     "echo": [
@@ -47,7 +47,11 @@ cmds = {
         Shell("kubectl apply -f pvcs.yaml", "Apply pvcs"),
     ],
     "generate": [
-        Venv("virtualenv -p $(which python3) venv", "create and activate virtualenv"),
+        Venv(
+            "virtualenv -p $(which python3) venv",
+            "venv",
+            "create and activate virtualenv",
+        ),
         Shell(
             "git clone https://github.com/apache/datafusion-benchmarks/",
             "Cloning apache/datafusion-benchmarks",
@@ -87,16 +91,20 @@ class Runner:
         commands: list[dict[str, str]],
         substitutions: dict[str, str] | None = None,
     ):
+
+        def do_a_command(cmd: str, desc: str):
+            click.secho(f"{desc} ...")
+            return_code, stdout, stderr = self.run_shell_command(cmd)
+            if return_code == 0:
+                click.secho(f"    {stdout}", fg="green")
+            else:
+                click.secho(f"    {stderr}", fg="red")
+                exit(1)
+
         for command in commands:
             match (self.dry_run, command):
                 case (False, Shell(cmd, desc)):
-                    click.secho(f"{desc} ...")
-                    return_code, stdout, stderr = self.run_shell_command(cmd)
-                    if return_code == 0:
-                        click.secho(f"    {stdout}", fg="green")
-                    else:
-                        click.secho(f"    {stderr}", fg="red")
-                        exit(1)
+                    do_a_command(cmd, desc)
 
                 case (True, Shell(cmd, desc)):
                     click.secho(f"[dry run] {desc} ...")
@@ -117,11 +125,11 @@ class Runner:
                 case (True, ChangeDir(path, desc)):
                     click.secho(f"[dry run] {desc} ...")
 
-                case (False, Venv(path, desc)):
-                    click.secho(f"{desc} ...")
+                case (False, Venv(cmd, path, desc)):
+                    do_a_command(cmd, desc)
                     self.venv = path
 
-                case (True, Venv(path, desc)):
+                case (True, Venv(cmd, path, desc)):
                     click.secho(f"[dry run] {desc} ...")
 
                 case _:
@@ -136,6 +144,7 @@ class Runner:
             cwd=self.cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            executable="/bin/bash",
         )
         stdout, stderr = process.communicate()
         return process.returncode, stdout.decode(), stderr.decode()
