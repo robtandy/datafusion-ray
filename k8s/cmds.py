@@ -127,7 +127,7 @@ class Runner:
 
                 case (False, Venv(cmd, path, desc)):
                     do_a_command(cmd, desc)
-                    self.venv = path
+                    self.venv = os.path.abspath(path)
 
                 case (True, Venv(cmd, path, desc)):
                     click.secho(f"[dry run] {desc} ...")
@@ -137,7 +137,8 @@ class Runner:
 
     def run_shell_command(self, command):
         if self.venv:
-            command = f"source {self.venv}/bin/activate && {command}"
+            venv_path = os.path.join(self.cwd, self.venv, "bin/activate")
+            command = f"source {venv_path} && {command}"
         process = subprocess.Popen(
             command,
             shell=True,
