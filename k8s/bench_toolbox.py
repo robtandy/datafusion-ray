@@ -58,6 +58,12 @@ def cli(dry_run: bool, verbose: bool):
     help="how many executors[ray workers] to start",
     required=True,
 )
+@click.option(
+    "--scale-factor",
+    type=click.Choice(["1", "10", "100", "1000"]),
+    help="TPCH scale factor",
+    required=True,
+)
 def bench(**kwargs):
     assert runner is not None
     runner.run_commands(cmds.cmds["bench"], kwargs)
