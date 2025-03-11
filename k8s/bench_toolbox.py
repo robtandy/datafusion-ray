@@ -9,9 +9,10 @@ runner: Runner | None = None
 
 @click.group()
 @click.option("--dry-run", is_flag=True)
-def cli(dry_run: bool):
+@click.option("-v", "--verbose", is_flag=True)
+def cli(dry_run: bool, verbose: bool):
     global runner
-    runner = Runner(dry_run)
+    runner = Runner(dry_run, verbose)
 
 
 @cli.command(help="run spark and df ray benchmarks")

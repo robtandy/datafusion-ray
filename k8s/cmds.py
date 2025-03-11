@@ -75,8 +75,9 @@ cmds = {
 
 
 class Runner:
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, verbose: bool = False):
         self.dry_run = dry_run
+        self.verbose = verbose
         self.cwd = os.getcwd()
         self.venv: str | None = None
 
@@ -98,7 +99,7 @@ class Runner:
         for command in commands:
             match (self.dry_run, command):
                 case (False, Shell(cmd, desc)):
-                    self.run_shell_command(cmd, desc)
+                    self.run_shell_command(cmd, desc, substitutions)
 
                 case (True, Shell(cmd, desc)):
                     click.secho(f"[dry run] {desc} ...")
@@ -129,11 +130,19 @@ class Runner:
                 case _:
                     raise Exception("Unhandled case in match.  Shouldn't happen")
 
-    def run_shell_command(self, command: str, desc: str):
+    def run_shell_command(
+        self, command: str, desc: str, substitutions: dict[str, str] | None = None
+    ):
         click.secho(f"{desc} ...")
         if self.venv:
             venv_path = os.path.join(self.cwd, self.venv, "bin/activate")
             command = f"source {venv_path} && {command}"
+        if substitutions:
+            command = jinja2.Template(command).render(substitutions)
+
+        if self.verbose:
+            click.secho(f"[Running command] {command}", fg="yellow")
+
         process = subprocess.Popen(
             command,
             shell=True,
