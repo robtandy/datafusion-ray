@@ -1,0 +1,43 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: spark-tpch-bench
+  namespace: default
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: spark:3.5.3
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///data/spark_tpcbench.py
+  arguments:
+    - --name
+    - spark
+    - --benchmark
+    - tpch
+    - --data
+    - /data/sf{{ scale_factor }}
+    - --queries
+    - /data/queries
+    - --output
+    - /data/
+  sparkVersion: 3.5.3
+  driver:
+    cores: {{ driver_cpus }}
+    memory: "{{ driver_mem }}g"
+    serviceAccount: spark-operator-spark
+    volumeMounts:
+      - name: spark-local-dir-spark-vol
+        mountPath: /data
+  executor:
+    instances: {{ executor_num }}
+    cores: {{ executor_cpus }}
+    memory: "{{ executor_mem }}g"
+    memoryOverhead: "{{ executor_overhead_mem }}g"
+    volumeMounts:
+      - name: spark-local-dir-spark-vol
+        mountPath: /data
+  volumes:
+    - name: spark-local-dir-spark-vol
+      persistentVolumeClaim:
+        claimName: ray-pvc
