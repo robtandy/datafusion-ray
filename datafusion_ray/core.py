@@ -556,7 +556,7 @@ class DFRayContext:
             name="RayContextSupersisor",
         ).remote(
             processor_pool_min,
-            processor_pool_min,
+            processor_pool_max,
         )
 
         # start up our super visor and don't check in on it until its

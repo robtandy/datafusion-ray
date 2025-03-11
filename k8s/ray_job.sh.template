@@ -4,5 +4,5 @@ ray job submit --address='http://localhost:8265' \
   --data /data/sf{{ scale_factor }} \
   --concurrency {{ concurrency }} \
   --partitions-per-processor {{ partitions-per-processor }} \
-  --processor-pool-min {{ processor-poo-min }} \
+  --processor-pool-min {{ processor-pool-min }} \
   --listing-tables

@@ -35,7 +35,7 @@ def main(
     data_path: str,
     concurrency: int,
     batch_size: int,
-    partitions_per_worker: int | None,
+    partitions_per_processor: int | None,
     processor_pool_min: int,
     listing_tables: bool,
     validate: bool,
@@ -59,7 +59,7 @@ def main(
 
     ctx = DFRayContext(
         batch_size=batch_size,
-        partitions_per_worker=partitions_per_worker,
+        partitions_per_processor=partitions_per_processor,
         prefetch_buffer_size=prefetch_buffer_size,
         processor_pool_min=processor_pool_min,
     )
@@ -94,7 +94,7 @@ def main(
             "concurrency": concurrency,
             "batch_size": batch_size,
             "prefetch_buffer_size": prefetch_buffer_size,
-            "partitions_per_worker": partitions_per_worker,
+            "partitions_per_processor": partitions_per_processor,
         },
         "data_path": data_path,
         "queries": {},
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--partitions-per-processor",
         type=int,
-        help="Max partitions per Stage Service Worker",
+        help="partitions per DFRayProcessor",
     )
     parser.add_argument(
         "--output_path",
