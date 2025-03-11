@@ -3,9 +3,11 @@ import click
 
 import cmds
 import os
+import pandas as pd
 import glob
 import json
 import time
+import datafusion
 from cmds import Runner
 
 runner: Runner | None = None
@@ -105,6 +107,7 @@ def bench(**kwargs):
     help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
+@cli.command(help="assemble the results into a single json")
 def results(data_path):
     df_result = json.loads(
         open(
@@ -114,13 +117,33 @@ def results(data_path):
     spark_result = json.loads(
         open(newest_file(glob.glob(os.path.join(data_path, "spark-tpch*json")))).read()
     )
+    print(df_result)
+    print(spark_result)
     total_results = {"spark": spark_result, "df-ray": df_result}
-    total_results["comparison"] = {
-        "spark": "\n".join([spark_result["queries"][i] for i in range(23)]),
-        "df-ray": "\n".join([df_result["queries"][i] for i in range(23)]),
-    }
+
+    spark = [spark_result["queries"][f"{i}"] for i in range(1, 23)]
+    df_ray = [df_result["queries"][f"{i}"] for i in range(1, 23)]
+
+    # df for "dataframe" here, not "datafusion".  Just using pandas for easy output
+    df = pd.DataFrame({"spark": spark, "df_ray": df_ray})
+    df["change"] = df["df_ray"] / df["spark"]
+
+    df["change_text"] = df["change"].apply(
+        lambda change: (
+            f"+{(1 / change):.2f}x faster" if change < 1.0 else f"{change:.2f}x slower"
+        )
+    )
+    df["tpch_query"] = list(range(1, 23))
+    df = df.set_index("tpch_query")
 
     ts = time.time()
+    df.to_parquet(f"datafusion-ray-spark-comparison-{ts}.parquet")
+    ctx = datafusion.SessionContext()
+    ctx.register_parquet("results", f"datafusion-ray-spark-comparison-{ts}.parquet")
+    ctx.sql(
+        "select tpch_query, spark, df_ray, change, change_text from results order by tpch_query asc"
+    ).show()
+
     out_path = f"datafusion-ray-spark-comparison-{ts}.json"
     open(out_path, "w").write(json.dumps(total_results))
 
