@@ -55,6 +55,37 @@ def k3s(data_path):
     runner.run_commands(cmds.cmds["k3s_setup"], {"data_path": data_path})
 
 
+@cli.command(help="Generate TPCH data")
+@click.option(
+    "--data-path",
+    type=str,
+    help="path to the directory that will hold generated TPCH data.  Should be >= 300GB",
+    required=True,
+)
+@click.option(
+    "--scale-factor",
+    type=click.Choice(["1", "10", "100", "1000"]),
+    help="TPCH scale factor",
+    required=True,
+)
+@click.option(
+    "--partitions",
+    type=int,
+    help="TPCH number of partitions for each table",
+    required=True,
+)
+def generate(data_path, scale_factor, partitions):
+    assert runner is not None
+    runner.run_commands(
+        cmds.cmds["generate"],
+        {
+            "data_path": data_path,
+            "scale_factor": scale_factor,
+            "partitions": partitions,
+        },
+    )
+
+
 @cli.command(help="just testing of toolbox shell commands that are harmless")
 def echo():
     assert runner is not None

@@ -45,7 +45,7 @@ cmds = {
         Template("pvcs.yaml.template", "rewrite pvcs.yaml.template"),
         Shell("kubectl apply -f pvcs.yaml", "Apply pvcs"),
     ],
-    "generate_data": [
+    "generate": [
         Shell(
             "git clone https://github.com/apache/datafusion-benchmarks/",
             "Cloning apache/datafusion-benchmarks",
@@ -97,11 +97,22 @@ class Runner:
                     click.secho(f"    {cmd}", fg="yellow")
 
                 case (False, Template(path, desc)):
+                    click.secho(f"{desc} ...")
                     self.process_template(path, ".", substitutions)
 
                 case (True, Template(path, desc)):
                     click.secho(f"[dry run] {desc} ...")
                     click.secho(f"    {path} subs:{substitutions}", fg="yellow")
+
+                case (False, ChangeDir(path, desc)):
+                    click.secho(f"{desc} ...")
+                    self.cwd = path
+
+                case (True, ChangeDir(path, desc)):
+                    click.secho(f"[dry run] {desc} ...")
+
+                case _:
+                    raise Exception("Unhandled case in match.  Shouldn't happen")
 
     def run_shell_command(self, command):
         process = subprocess.Popen(
