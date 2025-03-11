@@ -80,6 +80,14 @@ cmds = {
     "bench": [
         Template("spark_job.yaml.template", "rewrite spark_job.yaml.template"),
         Shell(
+            "cp {{ MY_DIR }}/spark_tpcbench.py {{ data_dir }}",
+            "copy spark_tpcbench.py to data_path dir",
+        ),
+        Shell(
+            "cp -a {{ MY_DIR }}/../tpch/queries {{ data_dir }}",
+            "copy tpch queries to data_path dir",
+        ),
+        Shell(
             "kubectl apply -f spark_job.yaml",
             "Submit spark job",
         ),
@@ -108,6 +116,10 @@ class Runner:
         commands: list[dict[str, str]],
         substitutions: dict[str, str] | None = None,
     ):
+        if not substitutions:
+            substitutions = {}
+
+        substitutions["MY_DIR"] = MY_DIR
 
         for command in commands:
             match (self.dry_run, command):

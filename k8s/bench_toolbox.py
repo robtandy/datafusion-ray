@@ -58,6 +58,12 @@ def cli(dry_run: bool, verbose: bool):
     help="TPCH scale factor",
     required=True,
 )
+@click.option(
+    "--data-path",
+    type=str,
+    help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
+    required=True,
+)
 def bench(**kwargs):
     assert runner is not None
     runner.run_commands(cmds.cmds["bench"], kwargs)
@@ -67,7 +73,7 @@ def bench(**kwargs):
 @click.option(
     "--data-path",
     type=str,
-    help="path to the directory that will hold generated TPCH data.  Should be >= 300GB",
+    help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
 def k3s(data_path):
@@ -79,7 +85,7 @@ def k3s(data_path):
 @click.option(
     "--data-path",
     type=str,
-    help="path to the directory that will hold generated TPCH data.  Should be >= 300GB",
+    help="path to the directory that will hold the generated TPCH data.  Should be >= 300GB",
     required=True,
 )
 @click.option(
