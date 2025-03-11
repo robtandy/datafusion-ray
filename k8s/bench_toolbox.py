@@ -17,45 +17,39 @@ def cli(dry_run: bool, verbose: bool):
 
 @cli.command(help="run spark and df ray benchmarks")
 @click.option(
-    "--driver_mem",
-    type=int,
-    help="how much memory (GiB) to allocate to the driver[head] node.",
-    required=True,
-)
-@click.option(
-    "--driver_cpus",
-    type=int,
-    help="how much cpu to allocate to the driver[ray head] node.",
-    required=True,
-)
-@click.option(
-    "--driver_mem",
-    type=int,
-    help="how much memory (GiB) to allocate to the executor[ray worker] nodes.",
-    required=True,
-)
-@click.option(
-    "--executor_mem",
-    type=int,
-    help="how much memory (GiB) to allocate to the executor[ray worker] nodes.",
-    required=True,
-)
-@click.option(
-    "--executor_overhead_mem",
-    type=int,
-    help="how much memory (GiB) to allocate to the executor overhead.  Not used on ray.  Will be subtracted from executor_mem",
-    required=True,
-)
-@click.option(
-    "--executor_cpu",
+    "--executor-cpus",
     type=int,
     help="how much cpu to allocate to the executor[ray worker] nodes.",
     required=True,
 )
 @click.option(
-    "--executor_num",
+    "--executor-mem",
+    type=int,
+    help="how much memory (GiB) to allocate to the executor[ray worker] nodes.",
+    required=True,
+)
+@click.option(
+    "--executor-overhead-mem",
+    type=int,
+    help="how much memory (GiB) to allocate to the executor overhead.  Not used on ray.  Will be subtracted from executor_mem",
+    required=True,
+)
+@click.option(
+    "--executor-num",
     type=int,
     help="how many executors[ray workers] to start",
+    required=True,
+)
+@click.option(
+    "--driver-mem",
+    type=int,
+    help="how much memory (GiB) to allocate to the driver[head] node.",
+    required=True,
+)
+@click.option(
+    "--driver-cpus",
+    type=int,
+    help="how much cpu to allocate to the driver[ray head] node.",
     required=True,
 )
 @click.option(
