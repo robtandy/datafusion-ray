@@ -5,4 +5,5 @@ ray job submit --address='http://localhost:8265' \
   --concurrency {{ concurrency }} \
   --partitions-per-processor {{ partitions_per_processor }} \
   --processor-pool-min {{ processor_pool_min }} \
-  --listing-tables
+  --listing-tables \
+  --output_path {{ data_path }}

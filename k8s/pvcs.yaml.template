@@ -3,7 +3,7 @@ kind: PersistentVolume
 metadata:
   name: ray-pv
 spec:
-  storageClassName: "" # Empty string must be explicitly set otherwise default StorageClass will be set
+  storageClassName: local-path
   capacity:
     storage: 300Gi
   volumeMode: Filesystem
@@ -21,10 +21,11 @@ metadata:
   name: ray-pvc
   namespace: default
 spec:
-  storageClassName: "" # Empty string must be explicitly set otherwise default StorageClass will be set
+  storageClassName: local-path
   accessModes:
     - ReadWriteMany
   volumeName: ray-pv
   resources:
     requests:
       storage: 300Gi
+
