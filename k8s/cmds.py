@@ -131,7 +131,7 @@ cmds = {
             "port forwarding from cluster",
         ),
         Shell(
-            "cp {{ MY_DIR }}/tpch/tpcbench.py .",
+            "cp {{ MY_DIR }}/../tpch/tpcbench.py .",
             "copy tpcbench.py to .",
         ),
         Shell(
