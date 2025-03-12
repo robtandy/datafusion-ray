@@ -82,7 +82,7 @@ cmds = {
             "convert the data to parquet",
         ),
     ],
-    "bench": [
+    "bench_spark": [
         Template("spark_job.yaml.template", "rewrite spark_job.yaml.template"),
         Shell(
             "cp {{ MY_DIR }}/spark_tpcbench.py {{ data_path }}",
@@ -102,7 +102,7 @@ cmds = {
                 sleep 5
                 STATE=$(kubectl get sparkapp/spark-tpch-bench -o json |jq -r '.status.applicationState.state')
                 echo  "Checking on job status...got $STATE looking for COMPLETED"
-                if [[ $STATE == "COMPLETED" ]]; then
+                if [[ $STATE != "RUNNING" ]]; then
                     break
                 fi
             done
@@ -113,6 +113,8 @@ cmds = {
             "kubectl delete -f spark_job.yaml",
             "tear down job",
         ),
+    ],
+    "bench_df_ray": [
         Template("ray_cluster.yaml.template", "rewrite ray_cluster.yaml.template"),
         Shell(
             "kubectl apply -f ray_cluster.yaml",

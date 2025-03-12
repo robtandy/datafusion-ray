@@ -96,9 +96,20 @@ def cli(dry_run: bool, verbose: bool):
     is_flag=True,
     help="use the test.pypi upload of DFRay",
 )
-def bench(**kwargs):
+@click.argument(
+    "system",
+    type=click.Choice(["spark", "df_ray"]),
+)
+def bench(system, **kwargs):
     assert runner is not None
-    runner.run_commands(cmds.cmds["bench"], kwargs)
+    match system:
+        case "spark":
+            runner.run_commands(cmds.cmds["bench_spark"], kwargs)
+        case "df_ray":
+            runner.run_commands(cmds.cmds["bench_ray"], kwargs)
+        case _:
+            print(f"unknown system {system}")
+            exit(1)
 
 
 @click.option(
