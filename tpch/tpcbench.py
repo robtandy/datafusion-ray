@@ -62,6 +62,7 @@ def main(
         partitions_per_processor=partitions_per_processor,
         prefetch_buffer_size=prefetch_buffer_size,
         processor_pool_min=processor_pool_min,
+        processor_pool_max=1000,
     )
 
     local = LocalValidator()
