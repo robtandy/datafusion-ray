@@ -131,6 +131,14 @@ cmds = {
             "port forwarding from cluster",
         ),
         Shell(
+            "cp {{ MY_DIR }}/tpch/tpcbench.py .",
+            "copy tpcbench.py to .",
+        ),
+        Shell(
+            "cp -a {{ MY_DIR }}/../tpch/queries .",
+            "copy tpch queries to .",
+        ),
+        Shell(
             ". ./ray_job.sh",
             "running ray job",
         ),
