@@ -59,8 +59,8 @@ cmds = {
     ],
     "generate": [
         Venv(
-            "virtualenv -p $(which python3) venv",
-            "venv",
+            "virtualenv -p $(which python3) bench_toolbox_venv",
+            "bench_toolbox_venv",
             "create and activate virtualenv",
         ),
         Shell(
@@ -248,7 +248,8 @@ class Runner:
         if process.returncode == 0:
             click.secho(f"    {stdout}", fg="green")
         else:
-            click.secho(f"    {stderr}", fg="red")
+            click.secho(f"    stdout = {stdout}", fg="red")
+            click.secho(f"    stderr = {stderr}", fg="red")
             click.secho(f"Error running command {command}")
             exit(1)
 
