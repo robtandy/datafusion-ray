@@ -1,3 +1,11 @@
+## Benchmarking on kubernetes
+
+This directory contains a utility `bench_toolbox.py` to facilitate benchmarking spark and datafusion-ray on k8s clusters.
+
+The paved path is to execute the steps on a fresh 24.04 ubuntu ami, but the tool should also work on for established k8s setups.
+
+If that is the case you'll want to skip the install of `https://k3s.io/` from the `k3s` subcommand and proceed. The `machine_prep.sh` script should provide clues about the environment requirements you'll need to satisfy to operate th tool.
+
 ### Benchmarking on a fresh ubuntu 24.04 LTS ami from amazon
 
 - provision the machine and ssh in and download the repo
