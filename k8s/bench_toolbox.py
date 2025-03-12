@@ -106,7 +106,7 @@ def bench(system, **kwargs):
         case "spark":
             runner.run_commands(cmds.cmds["bench_spark"], kwargs)
         case "df_ray":
-            runner.run_commands(cmds.cmds["bench_ray"], kwargs)
+            runner.run_commands(cmds.cmds["bench_df_ray"], kwargs)
         case _:
             print(f"unknown system {system}")
             exit(1)
