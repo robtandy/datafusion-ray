@@ -47,7 +47,7 @@ cmds = {
         ),
         Shell("helm repo update", "Updating helm repos"),
         Shell(
-            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait",
+            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait --timeout=120s",
             "Installing kuberay-operator",
         ),
         Shell(

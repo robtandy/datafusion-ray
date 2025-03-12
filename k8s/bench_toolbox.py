@@ -6,8 +6,11 @@ import os
 import pandas as pd
 import glob
 import json
+import re
 import time
 import datafusion
+import ec2_metadata
+import subprocess
 from cmds import Runner
 
 runner: Runner | None = None
@@ -96,6 +99,11 @@ def cli(dry_run: bool, verbose: bool):
     is_flag=True,
     help="use the test.pypi upload of DFRay",
 )
+@click.option(
+    "--arm",
+    is_flag=True,
+    help="deploy an arm image for ray cluster image",
+)
 @click.argument(
     "system",
     type=click.Choice(["spark", "df_ray"]),
@@ -135,6 +143,10 @@ def results(data_path):
     spark = [spark_result["queries"][f"{i}"] for i in range(1, 23)]
     df_ray = [df_result["queries"][f"{i}"] for i in range(1, 23)]
 
+    # add a final row with the totals
+    spark += [sum(spark)]
+    df_ray += [sum(df_ray)]
+
     # df for "dataframe" here, not "datafusion".  Just using pandas for easy output
     df = pd.DataFrame({"spark": spark, "df_ray": df_ray})
     df["change"] = df["df_ray"] / df["spark"]
@@ -144,16 +156,81 @@ def results(data_path):
             f"+{(1 / change):.2f}x faster" if change < 1.0 else f"{change:.2f}x slower"
         )
     )
-    df["tpch_query"] = list(range(1, 23))
-    df = df.set_index("tpch_query")
+    df["tpch_query"] = [f"{i}" for i in range(1, 23)] + ["total"]
+    df["sort_index"] = list(range(1, 24))
 
     ts = time.time()
     df.to_parquet(f"datafusion-ray-spark-comparison-{ts}.parquet")
     ctx = datafusion.SessionContext()
     ctx.register_parquet("results", f"datafusion-ray-spark-comparison-{ts}.parquet")
+
+    machine = ec2_metadata.ec2_metadata.instance_type
+    cpu = subprocess.run(
+        "lscpu | grep 'Model Name' |awk '{print $3}'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    quantity = subprocess.run(
+        "lscpu | grep '^CPU(s):' |awk '{print $2}'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    memory = subprocess.run(
+        "lsmem | grep 'Total online' |awk '{print $4}'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    data_device = subprocess.run(
+        f"df -h |grep '{data_path}'|awk '{{print $1}}'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    hdresults = subprocess.run(
+        f"sudo hdparm -t {data_device}|grep 'MB/sec'",
+        shell=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    print(f" res = [{hdresults}]")
+    hdresult = re.search(r"([\d\.]+) MB/sec", hdresults, re.MULTILINE).group(1)
+
+    print("=" * 90)
+    header = [
+        "Spark and DataFusionRay TPCH 100 Benchmarks",
+        f"{'Machine:':<30}{machine}",
+        f"{'CPU(s):':<30}{cpu} {quantity}x",
+        f"{'MEM:':<30}{memory}",
+        f"{'HD Throughput:':<30}{hdresult} (from hdparm)",
+        "",
+        "DataFusionRay Settings:",
+        f"{'concurrency:':<30}{df_result['settings']['concurrency']:>10}",
+        f"{'batch_size :':<30}{df_result['settings']['batch_size']:>10}",
+        f"{'partitions_per_processor:':<30}{df_result['settings']['partitions_per_processor']:>10}",
+        f"{'Ray Workers:':<30}{spark_result['spark_conf']['spark.executor.instances']:>10}",
+        f"{'Ray Worker Mem (GB):':<30}{int(spark_result['spark_conf']['spark.executor.memory'][:-1]) + int(spark_result['spark_conf']['spark.executor.memoryOverhead'][:-1]):>10}",
+        f"{'Ray Worker CPU:':<30}{spark_result['spark_conf']['spark.executor.cores']:>10}",
+        f"{'Ray Head Mem (GB):':<30}{int(spark_result['spark_conf']['spark.driver.memory'][:-1]):>10}",
+        f"{'Ray Head CPU:':<30}{spark_result['spark_conf']['spark.driver.cores']:>10}",
+        "",
+        "Spark Settings:",
+        f"{'Executors:':<30}{spark_result['spark_conf']['spark.executor.instances']:>10}",
+        f"{'Executor Mem (GB):':<30}{int(spark_result['spark_conf']['spark.executor.memory'][:-1]):>10}",
+        f"{'Executor Overhead Mem (GB):':<30}{int(spark_result['spark_conf']['spark.executor.memoryOverhead'][:-1]):>10}",
+        f"{'Executor CPU:':<30}{spark_result['spark_conf']['spark.executor.cores']:>10}",
+        f"{'Driver Mem(GB):':<30}{int(spark_result['spark_conf']['spark.driver.memory'][:-1]):>10}",
+        f"{'Driver CPU:':<30}{spark_result['spark_conf']['spark.driver.cores']:>10}",
+    ]
+    for h in header:
+        print(h)
+
+    print("=" * 90)
     ctx.sql(
-        "select tpch_query, spark, df_ray, change, change_text from results order by tpch_query asc"
-    ).show()
+        "select tpch_query, spark, df_ray, change, change_text from results order by sort_index asc"
+    ).show(num=100)
 
     out_path = f"datafusion-ray-spark-comparison-{ts}.json"
     open(out_path, "w").write(json.dumps(total_results))
