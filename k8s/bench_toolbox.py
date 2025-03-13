@@ -133,8 +133,14 @@ def bench(system, **kwargs):
     help="path to the device in /dev/ that holds the data-path.  It will be benchmarked with hdparm for throughput.",
     required=True,
 )
+@click.option(
+    "--scale-factor",
+    type=click.Choice(["1", "10", "100", "1000"]),
+    help="TPCH scale factor",
+    required=True,
+)
 @cli.command(help="assemble the results into a single json")
-def results(data_path, data_device):
+def results(data_path, data_device, scale_factor):
     df_result = json.loads(
         open(
             newest_file(glob.glob(os.path.join(data_path, "datafusion-ray*json")))
@@ -162,7 +168,7 @@ def results(data_path, data_device):
 
     df["change_text"] = df["change"].apply(
         lambda change: (
-            f"+{(1 / change):.2f}x faster" if change < 1.0 else f"{change:.2f}x slower"
+            f"+{(1 / change):.2f}x faster" if change < 1.0 else f" {change:.2f}x slower"
         )
     )
     df["tpch_query"] = [f"{i}" for i in range(1, 23)] + ["total"]
@@ -209,7 +215,17 @@ def results(data_path, data_device):
     spark_cost = spark[-1] / 3600 * hourly_cost
     df_ray_cost = df_ray[-1] / 3600 * hourly_cost
 
-    print("=" * 96)
+    cost_delta = df_ray_cost / spark_cost
+    cost_delta_text = f"+{(1 / cost_delta):.2f}x cheaper" if cost_delta < 1.0 else f"{cost_delta:.2f}x more expensive"
+    speed_delta_text = df['change_text'].iloc[-1]
+
+    df_ray_cost = f"${df_ray_cost:.4f}"
+    df_ray_duration = f"{df_ray[-1]:.2f}s"
+    spark_cost = f"${spark_cost:.4f}"
+    spark_duration = f"{spark[-1]:.2f}s"
+
+    print("=" * 97)
+    # the formatting code is terrible here, but it works for now
     header = [
         "Spark and DataFusionRay TPCH 100 Benchmarks",
         f"{'Machine:':<30}{machine}",
@@ -217,11 +233,13 @@ def results(data_path, data_device):
         f"{'CPU(s):':<30}{cpu} {quantity}x",
         f"{'MEM:':<30}{memory}",
         f"{'HD Throughput:':<30}{hdresult} MB/s (from hdparm)",
+        f"{'Data Location:':<30}{data_path}/sf{scale_factor}",
         "",
-        f"{'df-ray duration (s):':<30}{df_ray[-1]}",
-        f"{'df-ray cost ($):':<30}${df_ray_cost}",
-        f"{'spark duration (s):':<30}{spark[-1]}",
-        f"{'spark cost ($):':<30}${spark_cost}",
+        f"{'df-ray duration:':<30}{df_ray_duration:>10} {speed_delta_text}",
+        f"{'df-ray cost:':<30}{df_ray_cost:>10} {cost_delta_text}",
+        "",
+        f"{'spark duration:':<30}{spark_duration:>10}",
+        f"{'spark cost:':<30}{spark_cost:>10}",
         "",
         "DataFusionRay Settings:",
         f"{'concurrency:':<30}{df_result['settings']['concurrency']:>10}",
@@ -244,9 +262,9 @@ def results(data_path, data_device):
     for h in header:
         print(h)
 
-    print("=" * 96)
+    print("=" * 97)
     ctx.sql(
-        "select tpch_query, spark, df_ray, change, change_text from results order by sort_index asc"
+        'select tpch_query, spark, df_ray, change as "change(=df_ray/spark)", change_text from results order by sort_index asc'
     ).show(num=100)
 
     out_path = f"datafusion-ray-spark-comparison-{ts}.json"
