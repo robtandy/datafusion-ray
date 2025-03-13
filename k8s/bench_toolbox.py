@@ -7,6 +7,7 @@ import pandas as pd
 import glob
 import json
 import re
+import pricing
 import time
 import datafusion
 import ec2_metadata
@@ -126,8 +127,14 @@ def bench(system, **kwargs):
     help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
+@click.option(
+    "--data-device",
+    type=str,
+    help="path to the device in /dev/ that holds the data-path.  It will be benchmarked with hdparm for throughput.",
+    required=True,
+)
 @cli.command(help="assemble the results into a single json")
-def results(data_path):
+def results(data_path, data_device):
     df_result = json.loads(
         open(
             newest_file(glob.glob(os.path.join(data_path, "datafusion-ray*json")))
@@ -147,6 +154,8 @@ def results(data_path):
     spark += [sum(spark)]
     df_ray += [sum(df_ray)]
 
+    # add another final row with costs
+
     # df for "dataframe" here, not "datafusion".  Just using pandas for easy output
     df = pd.DataFrame({"spark": spark, "df_ray": df_ray})
     df["change"] = df["df_ray"] / df["spark"]
@@ -164,7 +173,6 @@ def results(data_path):
     ctx = datafusion.SessionContext()
     ctx.register_parquet("results", f"datafusion-ray-spark-comparison-{ts}.parquet")
 
-    machine = ec2_metadata.ec2_metadata.instance_type
     cpu = subprocess.run(
         "lscpu | grep 'Model Name' |awk '{print $3}'",
         shell=True,
@@ -183,20 +191,20 @@ def results(data_path):
         capture_output=True,
         text=True,
     ).stdout.strip()
-    data_device = subprocess.run(
-        f"df -h |grep '{data_path}'|awk '{{print $1}}'",
-        shell=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     hdresults = subprocess.run(
         f"sudo hdparm -t {data_device}|grep 'MB/sec'",
         shell=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    print(f" res = [{hdresults}]")
+
     hdresult = re.search(r"([\d\.]+) MB/sec", hdresults, re.MULTILINE).group(1)
+
+    machine = ec2_metadata.ec2_metadata.instance_type
+    hourly_cost = pricing.get_reserved("us-east-1", machine)["1.0y"]["all"]
+
+    spark_cost = spark[-1] / 3600 * hourly_cost
+    df_ray_cost = df_ray[-1] / 3600 * hourly_cost
 
     print("=" * 90)
     header = [
@@ -205,6 +213,11 @@ def results(data_path):
         f"{'CPU(s):':<30}{cpu} {quantity}x",
         f"{'MEM:':<30}{memory}",
         f"{'HD Throughput:':<30}{hdresult} (from hdparm)",
+        "",
+        f"{'df-ray duration:':<30}{df_ray[-1]}",
+        f"{'df-ray cost:':<30}${df_ray_cost}",
+        f"{'spark duration:':<30}{spark[-1]}",
+        f"{'spark cost:':<30}${spark_cost}",
         "",
         "DataFusionRay Settings:",
         f"{'concurrency:':<30}{df_result['settings']['concurrency']:>10}",
@@ -242,6 +255,16 @@ def results(data_path):
     type=str,
     help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
+)
+@click.option(
+    "--k3s-url",
+    type=str,
+    help="url to head node of the cluster to join",
+)
+@click.option(
+    "--k3s-token",
+    type=str,
+    help="k3s token to authorize when joining the cluster",
 )
 def k3s(**kwargs):
     assert runner is not None

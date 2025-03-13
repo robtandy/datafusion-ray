@@ -24,7 +24,10 @@ cmds = {
         Shell("echo hello 3", "echoing third which we wont see"),
     ],
     "k3s_setup": [
-        Shell("sudo curl -sfL https://get.k3s.io | sh -", "Installing K3s"),
+        Shell(
+            """sudo curl -sfL https://get.k3s.io | {{ f'K3S_URL={k3s_url} if k3s_url else ""' }} {{ f'K3S_TOKEN={k3s_token} if k3s_token else ""' }} | sh -""",
+            "Installing K3s",
+        ),
         Shell(
             "sudo chmod a+r /etc/rancher/k3s/k3s.yaml",
             "Allow read access to chmod a+r /etc/rancher/k3s/k3s.yaml",
