@@ -67,22 +67,8 @@ cmds = {
             "create and activate virtualenv",
         ),
         Shell(
-            "git clone https://github.com/apache/datafusion-benchmarks/",
-            "Cloning apache/datafusion-benchmarks",
-        ),
-        ChangeDir("datafusion-benchmarks", "Change to repo dir"),
-        Shell("pip install -r requirements.txt", "install repo requirements"),
-        ChangeDir("tpch", "Change to tpch dir"),
-        Shell("mkdir -p {{data_path}}/sf{{scale_factor}}", "make data dir"),
-        Shell("rm -f data", "remove existing symlink if any"),
-        Shell("ln -s {{data_path}}/sf{{scale_factor}} data", "symlink data dir"),
-        Shell(
-            "python tpchgen.py generate --scale-factor {{scale_factor}} --partitions {{partitions}}",
-            "generate the data",
-        ),
-        Shell(
-            "python tpchgen.py convert --scale-factor {{scale_factor}} --partitions {{partitions}}",
-            "convert the data to parquet",
+            "python {{ MY_DIR }}/tpch/make_data.py {{scale_factor}} {{partitions}} {{data_dir}}",
+            "generate data",
         ),
     ],
     "bench_spark": [
