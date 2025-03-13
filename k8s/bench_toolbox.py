@@ -201,7 +201,10 @@ def results(data_path, data_device):
     hdresult = re.search(r"([\d\.]+) MB/sec", hdresults, re.MULTILINE).group(1)
 
     machine = ec2_metadata.ec2_metadata.instance_type
-    hourly_cost = pricing.get_reserved("us-east-1", machine)["1.0y"]["all"]
+
+    # if you get reserved it includes any discounts you may have associated
+    # with your ec2 credentials.  So a public price is appropriate for sharing
+    hourly_cost = pricing.get_on_demand_price("us-east-1", machine)
 
     spark_cost = spark[-1] / 3600 * hourly_cost
     df_ray_cost = df_ray[-1] / 3600 * hourly_cost
