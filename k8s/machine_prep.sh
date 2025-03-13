@@ -26,4 +26,4 @@ sudo apt install -y python3-virtualenv
 virtualenv -p $(which python3) venv
 . ./venv/bin/activate
 # install what we need to run the tool
-pip install click jinja2 pandas datafusion 'ray[default]' ec2_metadata duckdb
+pip install click jinja2 pandas datafusion 'ray[default]' ec2_metadata duckdb boto3

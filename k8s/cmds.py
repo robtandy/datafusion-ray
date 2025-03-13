@@ -25,7 +25,7 @@ cmds = {
     ],
     "k3s_setup": [
         Shell(
-            """sudo curl -sfL https://get.k3s.io | {{ f'K3S_URL={k3s_url} if k3s_url else ""' }} {{ f'K3S_TOKEN={k3s_token} if k3s_token else ""' }} | sh -""",
+            """sudo curl -sfL https://get.k3s.io | {{ k3s_url if k3s_url else "" }} {{ k3s_token if k3s_token else ""}} sh -""",
             "Installing K3s",
         ),
         Shell(
@@ -61,13 +61,12 @@ cmds = {
         Shell("kubectl apply -f pvcs.yaml", "Apply pvcs"),
     ],
     "generate": [
-        Venv(
-            "virtualenv -p $(which python3) bench_toolbox_venv",
-            "bench_toolbox_venv",
-            "create and activate virtualenv",
+        Shell(
+            "mkdir -p /data/sf{{scale_factor}}",
+            "make directory /data/sf{{scale_factor}}",
         ),
         Shell(
-            "python {{ MY_DIR }}/tpch/make_data.py {{scale_factor}} {{partitions}} {{data_dir}}",
+            "python {{ MY_DIR }}/../tpch/make_data.py {{scale_factor}} {{partitions}} {{data_path}}/sf{{scale_factor}}",
             "generate data",
         ),
     ],

@@ -2,6 +2,7 @@ import duckdb
 
 import sys
 import os
+import multiprocessing
 
 conn = duckdb.connect()
 
@@ -23,9 +24,9 @@ def make(scale_factor: int, partitions: int, output_path: str, step:int):
 
     for row in conn.execute("show tables").fetchall():
         table = row[0]
-        os.makedirs(f"{output_path}/{table}", exist_ok=True)
+        os.makedirs(f"{output_path}/{table}.parquet", exist_ok=True)
         statements.append(
-            f"copy {table} to '{output_path}/{table}/part{step}.parquet' (format parquet, compression zstd)"
+            f"copy {table} to '{output_path}/{table}.parquet/part{step}.parquet' (format parquet, compression zstd)"
         )
     execute(statements)
 
@@ -37,4 +38,13 @@ def execute(statements):
 
 
 if __name__ == "__main__":
-    make(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
+    scale_factor = int(sys.argv[1])
+    partitions = int(sys.argv[2])
+    data_path = sys.argv[3]
+
+    def go(step):
+        make(scale_factor, partitions, data_path, step)
+
+    steps = list(range(partitions))
+    with multiprocessing.Pool(processes=4) as pool:
+        pool.map(go, steps)

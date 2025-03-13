@@ -174,7 +174,7 @@ def results(data_path, data_device):
     ctx.register_parquet("results", f"datafusion-ray-spark-comparison-{ts}.parquet")
 
     cpu = subprocess.run(
-        "lscpu | grep 'Model Name' |awk '{print $3}'",
+        "lscpu | grep 'Model name' |awk '{print $3}'",
         shell=True,
         capture_output=True,
         text=True,
@@ -209,18 +209,19 @@ def results(data_path, data_device):
     spark_cost = spark[-1] / 3600 * hourly_cost
     df_ray_cost = df_ray[-1] / 3600 * hourly_cost
 
-    print("=" * 90)
+    print("=" * 96)
     header = [
         "Spark and DataFusionRay TPCH 100 Benchmarks",
         f"{'Machine:':<30}{machine}",
+        f"{'Machine On Demand Cost:':<30}{hourly_cost} $/hr",
         f"{'CPU(s):':<30}{cpu} {quantity}x",
         f"{'MEM:':<30}{memory}",
-        f"{'HD Throughput:':<30}{hdresult} (from hdparm)",
+        f"{'HD Throughput:':<30}{hdresult} MB/s (from hdparm)",
         "",
-        f"{'df-ray duration:':<30}{df_ray[-1]}",
-        f"{'df-ray cost:':<30}${df_ray_cost}",
-        f"{'spark duration:':<30}{spark[-1]}",
-        f"{'spark cost:':<30}${spark_cost}",
+        f"{'df-ray duration (s):':<30}{df_ray[-1]}",
+        f"{'df-ray cost ($):':<30}${df_ray_cost}",
+        f"{'spark duration (s):':<30}{spark[-1]}",
+        f"{'spark cost ($):':<30}${spark_cost}",
         "",
         "DataFusionRay Settings:",
         f"{'concurrency:':<30}{df_result['settings']['concurrency']:>10}",
@@ -243,7 +244,7 @@ def results(data_path, data_device):
     for h in header:
         print(h)
 
-    print("=" * 90)
+    print("=" * 96)
     ctx.sql(
         "select tpch_query, spark, df_ray, change, change_text from results order by sort_index asc"
     ).show(num=100)
@@ -271,6 +272,10 @@ def results(data_path, data_device):
 )
 def k3s(**kwargs):
     assert runner is not None
+    if kwargs['k3s_url']:
+        kwargs['k3s_url'] = f"K3S_URL={kwargs['k3s_url']}"
+    if kwargs['k3s_token']:
+        kwargs['k3s_token'] = f"K3S_TOKEN={kwargs['k3s_token']}"
     runner.run_commands(cmds.cmds["k3s_setup"], kwargs)
 
 
