@@ -272,10 +272,10 @@ def results(data_path, data_device):
 )
 def k3s(**kwargs):
     assert runner is not None
-    if kwargs['k3s_url']:
-        kwargs['k3s_url'] = f"K3S_URL={kwargs['k3s_url']}"
-    if kwargs['k3s_token']:
-        kwargs['k3s_token'] = f"K3S_TOKEN={kwargs['k3s_token']}"
+    if kwargs["k3s_url"]:
+        kwargs["k3s_url"] = f"K3S_URL={kwargs['k3s_url']}"
+    if kwargs["k3s_token"]:
+        kwargs["k3s_token"] = f"K3S_TOKEN={kwargs['k3s_token']}"
     runner.run_commands(cmds.cmds["k3s_setup"], kwargs)
 
 
@@ -297,6 +297,12 @@ def k3s(**kwargs):
     type=int,
     help="TPCH number of partitions for each table",
     required=True,
+)
+@click.option(
+    "--pool-size",
+    type=int,
+    default=1,
+    help="number of concurrent processors to use.  Watch out!  too high and machine will lock up from too much memory use",
 )
 def generate(**kwargs):
     assert runner is not None

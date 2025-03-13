@@ -66,7 +66,7 @@ cmds = {
             "make directory /data/sf{{scale_factor}}",
         ),
         Shell(
-            "python {{ MY_DIR }}/../tpch/make_data.py {{scale_factor}} {{partitions}} {{data_path}}/sf{{scale_factor}}",
+            "python {{ MY_DIR }}/../tpch/make_data.py {{scale_factor}} {{partitions}} {{data_path}}/sf{{scale_factor}} {{pool_size}}",
             "generate data",
         ),
     ],
