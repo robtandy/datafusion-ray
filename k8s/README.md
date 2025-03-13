@@ -18,7 +18,30 @@ git checkout k8s_benchmarking
 
 - then run the machine prep script
 
-```bash
+````bash
 cd datafusion-ray/k8s
-bash
+```bash
+./machine_prep.sh
+````
+
+Next, you'll want to choose where you'll keep your TPCH data.
+
+```bash
+sudo mkdir /data
+sudo chmod -R 777 /data
 ```
+
+At this point, you'll have the configuration needed to operate the `bench_toolbox.py` script. So, if you first need kubernetes installed, run
+
+```bash
+./bench_toolbox.py -v k3s --data-path /data
+```
+
+This will:
+
+- create a single machine cluster using k3s
+- create the PVC for /data
+- install kuberay operater
+- install spark operator
+
+

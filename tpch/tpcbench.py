@@ -122,6 +122,12 @@ def main(
 
         calculated = "\n".join([prettify(b) for b in all_batches])
         print(calculated)
+        out_path = os.path.join(
+            output_path, f"datafusion_ray_tpch_q{qnum}_result.txt"
+        )
+        with open(out_path, "w") as f:
+            f.write(calculated)
+
         if validate:
             all_batches = []
             for sql in statements:

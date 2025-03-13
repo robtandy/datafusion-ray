@@ -3,4 +3,4 @@
 --extra-index-url https://pypi.org/simple/
 {% endif %}
 datafusion-ray=={{ df_ray_version }}
-
+duckdb

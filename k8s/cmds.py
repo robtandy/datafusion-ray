@@ -47,7 +47,7 @@ cmds = {
         ),
         Shell("helm repo update", "Updating helm repos"),
         Shell(
-            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait --timeout=120s",
+            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install kuberay-operator kuberay/kuberay-operator --version 1.3.0 --wait",
             "Installing kuberay-operator",
         ),
         Shell(
@@ -121,7 +121,7 @@ cmds = {
             "deploying ray cluster",
         ),
         Shell(
-            "kubectl wait raycluster/datafusion-ray-cluster --for='jsonpath={.status.state}'=ready",
+            "kubectl wait raycluster/datafusion-ray-cluster --for='jsonpath={.status.state}'=ready --timeout=300s",
             "wait for ray cluster to be ready",
         ),
         Template("requirements.txt.template", "rewrite requirements.txt.template"),

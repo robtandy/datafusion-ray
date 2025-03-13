@@ -79,7 +79,9 @@ def main(benchmark: str, data_path: str, query_path: str, output: str, name: str
         with open(path, "r") as f:
             text = f.read()
             # each file can contain multiple queries
-            queries = text.split(";")
+            queries = list(
+                filter(lambda x: len(x) > 0, map(lambda x: x.strip(), text.split(";")))
+            )
 
             start_time = time.time()
             for sql in queries:
@@ -88,9 +90,14 @@ def main(benchmark: str, data_path: str, query_path: str, output: str, name: str
                     print(f"Executing: {sql}")
                     df = spark.sql(sql)
                     rows = df.collect()
-
-                    print(f"Query {query} returned {len(rows)} rows")
             end_time = time.time()
+
+            out_path = f"{output}/{name}_{benchmark}_q{query}_result.txt"
+            # fIXME: concat output for all queries.  For example q15 has multiple
+            out = df._show_string(100000)
+            with open(out_path, "w") as f:
+                f.write(out)
+
             print(f"Query {query} took {end_time - start_time} seconds")
 
             results["queries"][str(query)] = end_time - start_time
