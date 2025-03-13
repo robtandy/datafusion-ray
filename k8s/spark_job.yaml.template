@@ -16,7 +16,7 @@ spec:
     - --benchmark
     - tpch
     - --data
-    - /data/sf{{ scale_factor }}
+    - {{ data_path }}/sf{{ scale_factor }}
     - --queries
     - /data/queries
     - --output

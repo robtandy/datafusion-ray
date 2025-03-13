@@ -87,7 +87,7 @@ cmds = {
         Shell(
             """
             while true; do
-                sleep 5
+                sleep 10 
                 STATE=$(kubectl get sparkapp/spark-tpch-bench -o json |jq -r '.status.applicationState.state')
                 echo  "Checking on job status...got $STATE looking for COMPLETED"
                 if [[ $STATE != "RUNNING" ]]; then

@@ -23,7 +23,7 @@ import time
 import sys
 
 
-def main(benchmark: str, data_path: str, query_path: str, output: str, name: str):
+def main(benchmark: str, data_path: str, query_path: str, output_path: str, name: str):
 
     # Initialize a SparkSession
     spark = SparkSession.builder.appName(
@@ -92,7 +92,7 @@ def main(benchmark: str, data_path: str, query_path: str, output: str, name: str
                     rows = df.collect()
             end_time = time.time()
 
-            out_path = f"{output}/{name}_{benchmark}_q{query}_result.txt"
+            out_path = f"{output_path}/{name}_{benchmark}_q{query}_result.txt"
             # fIXME: concat output for all queries.  For example q15 has multiple
             out = df._show_string(100000)
             with open(out_path, "w") as f:
@@ -108,7 +108,7 @@ def main(benchmark: str, data_path: str, query_path: str, output: str, name: str
 
     out = json.dumps(results, indent=4)
     current_time_millis = int(datetime.now().timestamp() * 1000)
-    results_path = f"{output}/{name}-{benchmark}-{current_time_millis}.json"
+    results_path = f"{output_path}/{name}-{benchmark}-{current_time_millis}.json"
     print(f"Writing results to {results_path}")
     with open(results_path, "w") as f:
         f.write(out)

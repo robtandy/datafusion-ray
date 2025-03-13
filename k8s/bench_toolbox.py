@@ -216,8 +216,12 @@ def results(data_path, data_device, scale_factor):
     df_ray_cost = df_ray[-1] / 3600 * hourly_cost
 
     cost_delta = df_ray_cost / spark_cost
-    cost_delta_text = f"+{(1 / cost_delta):.2f}x cheaper" if cost_delta < 1.0 else f"{cost_delta:.2f}x more expensive"
-    speed_delta_text = df['change_text'].iloc[-1]
+    cost_delta_text = (
+        f"+{(1 / cost_delta):.2f}x cheaper"
+        if cost_delta < 1.0
+        else f"{cost_delta:.2f}x more expensive"
+    )
+    speed_delta_text = df["change_text"].iloc[-1]
 
     df_ray_cost = f"${df_ray_cost:.4f}"
     df_ray_duration = f"{df_ray[-1]:.2f}s"
