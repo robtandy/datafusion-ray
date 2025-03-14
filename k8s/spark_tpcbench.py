@@ -26,11 +26,14 @@ import sys
 def main(benchmark: str, data_path: str, query_path: str, output_path: str, name: str):
 
     # Initialize a SparkSession
-    spark = SparkSession.builder.appName(
-        f"{name} benchmark derived from {benchmark}"
-    ).getOrCreate()
+    spark = SparkSession.builder \
+        .appName( f"{name} benchmark derived from {benchmark}") \
+        .getOrCreate()
 
-    # Register the tables
+    spark.conf.set("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    spark.conf.set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+
+        # Register the tables
     num_queries = 22
     table_names = [
         "customer",

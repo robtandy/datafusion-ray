@@ -71,9 +71,16 @@ def cli(dry_run: bool, verbose: bool):
 @click.option(
     "--data-path",
     type=str,
-    help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
+    help="path(url) to the directory that holds generated TPCH data.  Should be >= 300GB",
     required=True,
 )
+@click.option(
+    "--output-path",
+    type=str,
+    help="path to the local directory exposed via PVC",
+    required=True,
+)
+
 @click.option(
     "--concurrency",
     type=int,
@@ -124,7 +131,13 @@ def bench(system, **kwargs):
 @click.option(
     "--data-path",
     type=str,
-    help="path to the directory that holds generated TPCH data.  Should be >= 300GB",
+    help="path/url to the directory that holds generated TPCH data.  Should be >= 300GB",
+    required=True,
+)
+@click.option(
+    "--output-path",
+    type=str,
+    help="path where outputfiles are written",
     required=True,
 )
 @click.option(
@@ -140,14 +153,14 @@ def bench(system, **kwargs):
     required=True,
 )
 @cli.command(help="assemble the results into a single json")
-def results(data_path, data_device, scale_factor):
+def results(data_path, data_device, scale_factor, output_path):
     df_result = json.loads(
         open(
-            newest_file(glob.glob(os.path.join(data_path, "datafusion-ray*json")))
+            newest_file(glob.glob(os.path.join(output_path, "datafusion-ray*json")))
         ).read()
     )
     spark_result = json.loads(
-        open(newest_file(glob.glob(os.path.join(data_path, "spark-tpch*json")))).read()
+        open(newest_file(glob.glob(os.path.join(output_path, "spark-tpch*json")))).read()
     )
     print(df_result)
     print(spark_result)

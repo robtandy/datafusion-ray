@@ -73,12 +73,21 @@ cmds = {
     "bench_spark": [
         Template("spark_job.yaml.template", "rewrite spark_job.yaml.template"),
         Shell(
-            "cp {{ MY_DIR }}/spark_tpcbench.py {{ data_path }}",
+            "cp {{ MY_DIR }}/spark_tpcbench.py {{ output_path }}",
             "copy spark_tpcbench.py to data_path dir",
         ),
         Shell(
-            "cp -a {{ MY_DIR }}/../tpch/queries {{ data_path }}",
+            "cp -a {{ MY_DIR }}/../tpch/queries {{ output_path }}",
             "copy tpch queries to data_path dir",
+        ),
+        Shell(
+            """
+            wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
+            mv aws-java-sdk-bundle-1.12.262.jar {{ output_path }} && \
+            wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+            mv hadoop-aws-3.3.4.jar {{ output_path }}
+            """,
+            "getting additional spark jars"
         ),
         Shell(
             "kubectl apply -f spark_job.yaml",

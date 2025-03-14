@@ -9,6 +9,10 @@ spec:
   mode: cluster
   image: spark:3.5.3
   imagePullPolicy: IfNotPresent
+  deps:
+    jars:
+      - local:///data/hadoop-aws-3.3.4.jar
+      - local:///data/aws-java-sdk-bundle-1.12.262.jar
   mainApplicationFile: local:///data/spark_tpcbench.py
   arguments:
     - --name
