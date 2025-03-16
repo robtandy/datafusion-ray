@@ -24,8 +24,11 @@ spec:
                 name: ray-storage
         volumes:
           - name: ray-storage
-            persistentVolumeClaim:
-                claimName: ray-pvc
+            hostPath:
+              path: /data
+              type: DirectoryOrCreate
+        nodeSelector:
+          node-role.kubernetes.io/master: "true" 
   workerGroupSpecs:
     - replicas: {{ executor_num }}
       groupName: "datafusion-ray"
@@ -49,5 +52,6 @@ spec:
                   name: ray-storage
           volumes:
             - name: ray-storage
-              persistentVolumeClaim:
-                claimName: ray-pvc
+              hostPath:
+                path: /data
+                type: DirectoryOrCreate

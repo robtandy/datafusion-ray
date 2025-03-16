@@ -22,6 +22,8 @@ from pyspark.sql import SparkSession
 import time
 import sys
 
+import boto3
+
 
 def main(benchmark: str, data_path: str, query_path: str, output_path: str, name: str):
 

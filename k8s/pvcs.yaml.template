@@ -10,7 +10,7 @@ spec:
   hostPath:
     path: "{{ data_path }}"
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   claimRef:
     name: ray-pvc
     namespace: default
@@ -23,7 +23,7 @@ metadata:
 spec:
   storageClassName: local-path
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   volumeName: ray-pv
   resources:
     requests:

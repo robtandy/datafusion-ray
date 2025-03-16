@@ -25,7 +25,7 @@ cmds = {
     ],
     "k3s_setup": [
         Shell(
-            """sudo curl -sfL https://get.k3s.io | {{ k3s_url if k3s_url else "" }} {{ k3s_token if k3s_token else ""}} sh -""",
+            """sudo curl -sfL https://get.k3s.io | {{ k3s_url if k3s_url else "" }} {{ k3s_token if k3s_token else ""}} sh - --write-kubeconfig-mode 644""",
             "Installing K3s",
         ),
         Shell(
@@ -54,7 +54,7 @@ cmds = {
             "Installing kuberay-operator",
         ),
         Shell(
-            "helm --kubeconfig /etc/rancher/k3s/k3s.yaml install spark-operator spark-operator/spark-operator",
+            """helm install --set-json='controller.env=[{"name":"SPARK_SUBMIT_OPTS","value":"-Divy.cache.dir=/tmp/ivy2/cache -Divy.home=/tmp/ivy2"}]' spark-operator spark-operator/spark-operator""",
             "Installing spark-operator",
         ),
         Template("pvcs.yaml.template", "rewrite pvcs.yaml.template"),
@@ -83,9 +83,9 @@ cmds = {
         Shell(
             """
             wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar && \
-            mv aws-java-sdk-bundle-1.12.262.jar {{ output_path }} && \
+            aws s3 cp aws-java-sdk-bundle-1.12.262.jar {{ data_path.replace('s3a','s3') }}/aws-java-sdk-bundle-1.12.262.jar && \
             wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
-            mv hadoop-aws-3.3.4.jar {{ output_path }}
+            aws s3 cp hadoop-aws-3.3.4.jar {{ data_path.replace('s3a','s3') }}/hadoop-aws-3.3.4.jar
             """,
             "getting additional spark jars"
         ),
@@ -106,10 +106,10 @@ cmds = {
             """,
             "checking on job status",
         ),
-        Shell(
-            "kubectl delete -f spark_job.yaml",
-            "tear down job",
-        ),
+        #Shell(
+        #    "kubectl delete -f spark_job.yaml",
+        #    "tear down job",
+        #),
     ],
     "bench_df_ray": [
         Template("ray_cluster.yaml.template", "rewrite ray_cluster.yaml.template"),
