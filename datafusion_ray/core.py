@@ -24,6 +24,7 @@ import pyarrow as pa
 import asyncio
 import ray
 import time
+import threading
 
 from .friendly import new_friendly_name
 
@@ -44,6 +45,9 @@ def setup_logging():
     # this logger gets captured and routed to rust.   See src/lib.rs
     logging.getLogger("core_py").setLevel(log_level)
     logging.basicConfig()
+    logging.getLogger("core_py").info(
+        "Setup logging using DATAFUSION_RAY_LOG_LEVEL=%s", log_level
+    )
 
 
 setup_logging()
@@ -63,14 +67,18 @@ log = logging.getLogger("core_py")
 
 
 def call_sync(coro):
-    """call a coroutine in the current event loop or run a new one, and synchronously
-    return the result"""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    else:
-        return loop.run_until_complete(coro)
+    """call a coroutine and synchronously wait for it to complete."""
+
+    event = threading.Event()
+
+    def go():
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(coro)
+        event.set()
+
+    threading.Thread(target=go).start()
+
+    event.wait()
 
 
 # work around for https://github.com/ray-project/ray/issues/31606
@@ -86,11 +94,9 @@ async def wait_for(coros, name=""):
     # wrap the coro in a task to work with python 3.10 and 3.11+ where asyncio.wait semantics
     # changed to not accept any awaitable
     start = time.time()
-    done, _ = await asyncio.wait(
-        [asyncio.create_task(_ensure_coro(c)) for c in coros]
-    )
+    done, _ = await asyncio.wait([asyncio.create_task(_ensure_coro(c)) for c in coros])
     end = time.time()
-    log.info(f"waiting for {name} took {end - start}s")
+    log.debug(f"waiting for {name} took {end - start}s")
     for d in done:
         e = d.exception()
         if e is not None:
@@ -166,9 +172,7 @@ class DFRayProcessorPool:
         need_to_make = need - have
 
         if need_to_make > can_make:
-            raise Exception(
-                f"Cannot allocate processors above {self.max_processors}"
-            )
+            raise Exception(f"Cannot allocate processors above {self.max_processors}")
 
         if need_to_make > 0:
             log.debug(f"creating {need_to_make} additional processors")
@@ -197,9 +201,9 @@ class DFRayProcessorPool:
         self.processors_ready.clear()
         processor_key = new_friendly_name()
         log.debug(f"starting processor: {processor_key}")
-        processor = DFRayProcessor.options(
-            name=f"Processor : {processor_key}"
-        ).remote(processor_key)
+        processor = DFRayProcessor.options(name=f"Processor : {processor_key}").remote(
+            processor_key
+        )
         self.pool[processor_key] = processor
         self.processors_started.add(processor.start_up.remote())
         self.available.add(processor_key)
@@ -248,9 +252,7 @@ class DFRayProcessorPool:
 
     async def all_done(self):
         log.info("calling processor all done")
-        refs = [
-            processor.all_done.remote() for processor in self.pool.values()
-        ]
+        refs = [processor.all_done.remote() for processor in self.pool.values()]
         await wait_for(refs, "processors to be all done")
         log.info("all processors shutdown")
 
@@ -293,9 +295,7 @@ class DFRayProcessor:
         )
 
     async def serve(self):
-        log.info(
-            f"[{self.processor_key}] serving on {self.processor_service.addr()}"
-        )
+        log.info(f"[{self.processor_key}] serving on {self.processor_service.addr()}")
         await self.processor_service.serve()
         log.info(f"[{self.processor_key}] done serving")
 
@@ -345,12 +345,13 @@ class DFRayContextSupervisor:
     async def wait_for_ready(self):
         await self.pool.wait_for_ready()
 
-    async def get_stage_addrs(self, stage_id: int):
-        addrs = [
-            sd.remote_addr
-            for sd in self.stages.values()
-            if sd.stage_id == stage_id
-        ]
+    async def get_stage_addrs(self, stage_id: int) -> dict[int, dict[int, list[str]]]:
+        addrs: dict[int, dict[int, list[str]]] = {stage_id: defaultdict(list)}
+
+        for sd in self.stages.values():
+            if sd.stage_id == stage_id:
+                for part in sd.partition_group:
+                    addrs[stage_id][part].append(sd.remote_addr)
         return addrs
 
     async def new_query(
@@ -399,15 +400,11 @@ class DFRayContextSupervisor:
             refs.append(
                 isd.remote_processor.update_plan.remote(
                     isd.stage_id,
-                    {
-                        stage_id: val["child_addrs"]
-                        for (stage_id, val) in kid.items()
-                    },
+                    {stage_id: val["child_addrs"] for (stage_id, val) in kid.items()},
                     isd.partition_group,
                     isd.plan_bytes,
                 )
             )
-        log.info("that's all of them")
 
         await wait_for(refs, "updating plans")
 
@@ -434,9 +431,7 @@ class DFRayContextSupervisor:
                 ]
 
                 # sanity check
-                assert all(
-                    [op == output_partitions[0] for op in output_partitions]
-                )
+                assert all([op == output_partitions[0] for op in output_partitions])
                 output_partitions = output_partitions[0]
 
                 for child_stage_isd in child_stage_datas:
@@ -503,26 +498,26 @@ class DFRayDataFrame:
     def optimized_logical_plan(self):
         return self.df.optimized_logical_plan()
 
+    def prepare(self):
+        t1 = time.time()
+        self.stages()
+        t2 = time.time()
+        log.debug(f"creating stages took {t2 - t1}s")
+
+        self.last_stage_id = max([stage.stage_id for stage in self._stages])
+        log.debug(f"last stage is {self.last_stage_id}")
+
+        self.create_ray_stages()
+
+        self.last_stage_addrs = ray.get(
+            self.supervisor.get_stage_addrs.remote(self.last_stage_id)
+        )
+        log.debug(f"last stage addrs {self.last_stage_addrs}")
+
     def collect(self) -> list[pa.RecordBatch]:
         if not self._batches:
-            t1 = time.time()
-            self.stages()
-            t2 = time.time()
-            log.debug(f"creating stages took {t2 - t1}s")
-
-            last_stage_id = max([stage.stage_id for stage in self._stages])
-            log.debug(f"last stage is {last_stage_id}")
-
-            self.create_ray_stages()
-
-            last_stage_addrs = ray.get(
-                self.supervisor.get_stage_addrs.remote(last_stage_id)
-            )
-            log.debug(f"last stage addrs {last_stage_addrs}")
-
-            reader = self.df.read_final_stage(
-                last_stage_id, last_stage_addrs[0]
-            )
+            self.prepare()
+            reader = self.df.read_final_stage(self.last_stage_id, self.last_stage_addrs)
             log.debug("got reader")
             self._batches = list(reader)
         return self._batches
@@ -555,6 +550,66 @@ class DFRayDataFrame:
         call_sync(wait_for([ref], "creating ray stages"))
 
 
+class DFRayProxy:
+    def __init__(
+        self,
+        batch_size: int = 8192,
+        prefetch_buffer_size: int = 0,
+        partitions_per_processor: int | None = None,
+        processor_pool_min: int = 1,
+        processor_pool_max: int = 100,
+    ):
+        self.batch_size = batch_size
+        self.partitions_per_processor = partitions_per_processor
+        self.prefetch_buffer_size = prefetch_buffer_size
+
+        # import this here so ray doesn't try to serialize the rust extension
+        from datafusion_ray._datafusion_ray_internal import (
+            DFRayProxyService,
+        )
+
+        self.proxy = DFRayProxyService(self)
+        self.proxy.start_up()
+
+        self.ctx = DFRayContext(
+            prefetch_buffer_size=prefetch_buffer_size,
+            partitions_per_processor=partitions_per_processor,
+            processor_pool_min=processor_pool_min,
+            processor_pool_max=processor_pool_max,
+        )
+        self.queries = {}
+
+    def addr(self):
+        return self.proxy.addr()
+
+    async def serve(self):
+        await self.proxy.serve()
+
+    def register_parquet(self, name: str, path: str):
+        self.ctx.register_parquet(name, path)
+
+    def register_csv(self, name: str, path: str):
+        self.ctx.register_csv(name, path)
+
+    def register_listing_table(self, name: str, path: str, file_extention="parquet"):
+        self.ctx.register_listing_table(name, path, file_extention)
+
+    def prepare_query(self, query: str) -> tuple[str, dict[int, dict[int, list[str]]]]:
+        query_id = new_friendly_name()
+
+        df = self.ctx.sql(query)
+        df.prepare()
+        last_stage_addrs = df.last_stage_addrs
+
+        self.queries[query_id] = last_stage_addrs
+
+        return query_id, last_stage_addrs
+
+    def __del__(self):
+        print("cleaning up")
+        call_sync(wait_for(self.proxy.all_done()))
+
+
 class DFRayContext:
     def __init__(
         self,
@@ -563,7 +618,7 @@ class DFRayContext:
         partitions_per_processor: int | None = None,
         processor_pool_min: int = 1,
         processor_pool_max: int = 100,
-    ) -> None:
+    ):
         self.ctx = DFRayContextInternal()
         self.batch_size = batch_size
         self.partitions_per_processor = partitions_per_processor
@@ -622,9 +677,7 @@ class DFRayContext:
         """
         self.ctx.register_csv(name, path)
 
-    def register_listing_table(
-        self, name: str, path: str, file_extention="parquet"
-    ):
+    def register_listing_table(self, name: str, path: str, file_extention="parquet"):
         """
         Register a directory of parquet files with the given name.
         The path can be a local filesystem path, absolute filesystem path, or a url.

@@ -21,9 +21,9 @@ use futures::stream::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{
-    flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
-    FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult,
-    SchemaResult, Ticket,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+    flight_service_server::FlightService, sql::server::FlightSqlService,
 };
 
 pub type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
@@ -115,5 +115,46 @@ impl FlightService for FlightServ {
         _request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoExchangeStream>, Status> {
         Err(Status::unimplemented("Unimplemented: do_exchange"))
+    }
+}
+
+#[tonic::async_trait]
+pub trait FlightSqlHandler: Send + Sync {
+    async fn get_flight_info_statement(
+        &self,
+        query: arrow_flight::sql::CommandStatementQuery,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status>;
+
+    async fn do_get_statement(
+        &self,
+        ticket: arrow_flight::sql::TicketStatementQuery,
+        request: Request<Ticket>,
+    ) -> Result<Response<DoGetStream>, Status>;
+}
+
+pub struct FlightSqlServ {
+    pub handler: Arc<dyn FlightSqlHandler>,
+}
+
+#[tonic::async_trait]
+impl FlightSqlService for FlightSqlServ {
+    type FlightService = Self;
+
+    async fn register_sql_info(&self, id: i32, result: &arrow_flight::sql::SqlInfo) {}
+
+    async fn get_flight_info_statement(
+        &self,
+        query: arrow_flight::sql::CommandStatementQuery,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        self.handler.get_flight_info_statement(query, request).await
+    }
+    async fn do_get_statement(
+        &self,
+        ticket: arrow_flight::sql::TicketStatementQuery,
+        request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.handler.do_get_statement(ticket, request).await
     }
 }

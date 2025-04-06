@@ -25,6 +25,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -42,6 +43,7 @@ use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -192,10 +194,6 @@ impl DFRayDataFrame {
             .pop()
             .ok_or(internal_datafusion_err!("No stages found"))?;
 
-        if last_stage.num_output_partitions() > 1 {
-            return internal_err!("Last stage expected to have one partition").to_py_err();
-        }
-
         last_stage = PyDFRayStage::new(
             last_stage.stage_id,
             Arc::new(MaxRowsExec::new(
@@ -247,19 +245,15 @@ impl DFRayDataFrame {
         &mut self,
         py: Python,
         stage_id: usize,
-        stage_addr: &str,
+        stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     ) -> PyResult<PyRecordBatchStream> {
-        wait_for_future(
-            py,
-            collect_from_stage(
-                stage_id,
-                0,
-                stage_addr,
-                self.final_plan.take().unwrap().clone(),
-            ),
-        )
-        .map(PyRecordBatchStream::new)
-        .to_py_err()
+        let plan = Arc::new(CoalescePartitionsExec::new(
+            self.final_plan.clone().take().unwrap(),
+        )) as Arc<dyn ExecutionPlan>;
+
+        wait_for_future(py, collect_from_stage(stage_id, 0, stage_addrs, plan))
+            .map(PyRecordBatchStream::new)
+            .to_py_err()
     }
 }
 

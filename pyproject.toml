@@ -39,6 +39,7 @@ dependencies = [
   "ray[default]==2.43.0",
   "pyarrow>=18.0.0",
   "typing-extensions;python_version<'3.13'",
+  "ipython>=8.34.0",
 ]
 dynamic = ["version"]
 

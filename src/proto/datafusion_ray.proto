@@ -45,5 +45,7 @@ message FlightTicketData {
   // parittion id of the stream
   bool dummy = 1;
   uint64 partition = 2;
+  // used by the DFRayProxyService
+  string remote_host = 3;
 }
 

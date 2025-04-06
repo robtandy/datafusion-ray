@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::future::Future;
 use std::io::Cursor;
@@ -32,7 +33,6 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use datafusion_python::utils::wait_for_future;
 use futures::{Stream, StreamExt};
 use log::debug;
 use object_store::ObjectStore;
@@ -46,6 +46,7 @@ use tonic::transport::Channel;
 use url::Url;
 
 use crate::codec::RayCodec;
+use crate::isolator::PartitionGroup;
 use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
 use crate::stage_reader::DFRayStageReaderExec;
@@ -69,6 +70,28 @@ where
             ))),
         }
     }
+}
+
+pub fn wait_for_future<F>(py: Python, f: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + std::fmt::Debug,
+{
+    let runtime = pyo3_async_runtimes::tokio::get_runtime();
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    let fut = async move || {
+        let res = f.await;
+        tx.send(res).expect("expect to be able to send to oneshot");
+    };
+
+    runtime.spawn_blocking(fut);
+
+    py.allow_hreads(move || {
+        rx.blocking_recv()
+            .expect("expect to be able to receive from one shot")
+    })
 }
 
 /// we need these two functions to go back and forth between IPC representations
@@ -143,11 +166,11 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     Ok(schema)
 }
 
-pub fn extract_ticket(ticket: Ticket) -> anyhow::Result<usize> {
+pub fn extract_ticket(ticket: Ticket) -> anyhow::Result<(usize, String)> {
     let data = ticket.ticket;
 
     let tic = FlightTicketData::decode(data)?;
-    Ok(tic.partition as usize)
+    Ok((tic.partition as usize, tic.remote_host))
 }
 
 /// produce a new SendableRecordBatchStream that will respect the rows
@@ -297,15 +320,48 @@ pub fn fix_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>, 
 pub async fn collect_from_stage(
     stage_id: usize,
     partition: usize,
-    stage_addr: &str,
+    stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
+    let stage_ids_i_need = input_stage_ids(&plan)?;
+
+    // map of stage_id, partition -> Vec<FlightClient>
     let mut client_map = HashMap::new();
 
-    let client = make_client(stage_addr).await?;
+    // a map of address -> FlightClient which we use while building the client map above
+    // so that we don't create duplicate clients for the same address.
+    let mut clients = HashMap::new();
 
-    client_map.insert((stage_id, partition), Mutex::new(vec![client]));
-    let config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
+    fn clone_flight_client(c: &FlightClient) -> FlightClient {
+        let inner_clone = c.inner().clone();
+        FlightClient::new_from_inner(inner_clone)
+    }
+
+    for stage_id in stage_ids_i_need {
+        let partition_addrs = stage_addrs.get(&stage_id).ok_or(internal_datafusion_err!(
+            "Cannot find stage addr {stage_id} in {:?}",
+            stage_addrs
+        ))?;
+
+        for (partition, addrs) in partition_addrs {
+            let mut flight_clients = vec![];
+            for addr in addrs {
+                let client = match clients.entry(addr) {
+                    Entry::Occupied(o) => clone_flight_client(o.get()),
+                    Entry::Vacant(v) => {
+                        let client = make_client(addr).await?;
+                        let clone = clone_flight_client(&client);
+                        v.insert(client);
+                        clone
+                    }
+                };
+                flight_clients.push(client);
+            }
+            client_map.insert((stage_id, *partition), Mutex::new(flight_clients));
+        }
+    }
+
+    let mut config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
 
     let state = SessionStateBuilder::new()
         .with_default_features()
@@ -431,7 +487,7 @@ impl LocalValidator {
         maybe_register_object_store(&self.ctx, url.as_ref()).to_py_err()?;
         debug!("register_parquet: registering table {} at {}", name, path);
 
-        wait_for_future(py, self.ctx.register_parquet(&name, &path, options.clone()))?;
+        wait_for_future(py, self.ctx.register_parquet(&name, &path, options.clone()));
         Ok(())
     }
 
@@ -587,7 +643,7 @@ mod test {
         array::Int32Array,
         datatypes::{DataType, Field, Schema},
     };
-    
+
     use futures::stream;
 
     use super::*;
@@ -607,9 +663,10 @@ mod test {
     #[tokio::test]
     async fn test_max_rows_stream() {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![
-            1, 2, 3, 4, 5, 6, 7, 8,
-        ]))])
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]))],
+        )
         .unwrap();
 
         // 24 total rows

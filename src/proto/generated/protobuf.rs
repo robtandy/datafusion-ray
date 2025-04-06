@@ -44,4 +44,7 @@ pub struct FlightTicketData {
     pub dummy: bool,
     #[prost(uint64, tag = "2")]
     pub partition: u64,
+    /// used by the DFRayProxyService
+    #[prost(string, tag = "3")]
+    pub remote_host: ::prost::alloc::string::String,
 }

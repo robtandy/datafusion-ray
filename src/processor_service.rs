@@ -205,7 +205,7 @@ impl FlightHandler for DFRayProcessorHandler {
 
         let ticket = request.into_inner();
 
-        let partition = extract_ticket(ticket).map_err(|e| {
+        let (partition, _) = extract_ticket(ticket).map_err(|e| {
             Status::internal(format!(
                 "{}, Unexpected error extracting ticket {e}",
                 self.name

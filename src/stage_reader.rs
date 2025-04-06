@@ -10,8 +10,8 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use datafusion::{arrow::datatypes::SchemaRef, execution::SendableRecordBatchStream};
-use futures::stream::TryStreamExt;
 use futures::StreamExt;
+use futures::stream::TryStreamExt;
 use log::trace;
 use prost::Message;
 
@@ -130,6 +130,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
         let ftd = FlightTicketData {
             dummy: false,
             partition: partition as u64,
+            remote_host: "".to_string(),
         };
 
         let ticket = Ticket {
