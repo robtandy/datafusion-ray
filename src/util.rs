@@ -1,10 +1,11 @@
+use std::any::type_name;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::future::Future;
 use std::io::Cursor;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -33,8 +34,10 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use futures::channel::oneshot;
 use futures::{Stream, StreamExt};
 use log::debug;
+use log::trace;
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
@@ -42,11 +45,11 @@ use object_store::http::HttpBuilder;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
+use tokio::runtime::{self, Runtime};
 use tonic::transport::Channel;
 use url::Url;
 
 use crate::codec::RayCodec;
-use crate::isolator::PartitionGroup;
 use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
 use crate::stage_reader::DFRayStageReaderExec;
@@ -72,26 +75,69 @@ where
     }
 }
 
-pub fn wait_for_future<F>(py: Python, f: F) -> F::Output
+struct Spawner {
+    runtime: Arc<Runtime>,
+}
+
+impl Spawner {
+    fn new() -> Self {
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("can build runtime"),
+        );
+        Self { runtime }
+    }
+
+    fn wait_for<F>(&self, f: F) -> PyResult<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send,
+    {
+        //let runtime = self.runtime.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
+        let fut = async move { tx.send(f.await) };
+        let _guard = self.runtime.enter();
+
+        tokio::spawn(fut);
+
+        let out = std::thread::spawn(move || rx.recv()).join().to_py_err()?;
+        out.to_py_err()
+
+        /*std::thread::scope(|s| {
+            debug!("spawning thread in scope");
+            let out = s
+                .spawn(move || {
+                    debug!("blocking on func");
+                    let out = runtime.run(f);
+                    debug!("done blocking on func");
+                    out
+                })
+                .join()
+                .to_py_err();
+            debug!("done spawning thread in scope");
+            out
+        })*/
+    }
+}
+
+pub fn wait_for_future<F, T, E>(py: Python, f: F) -> PyResult<T>
 where
-    F: Future + Send + 'static,
-    F::Output: Send + std::fmt::Debug,
+    F: Future<Output = Result<T, E>> + Send + 'static,
+    F::Output: Send,
+    E: std::fmt::Debug,
 {
-    let runtime = pyo3_async_runtimes::tokio::get_runtime();
+    //return datafusion_python::utils::wait_for_future(py, f).to_py_err();
+    static SPAWNER: OnceLock<Spawner> = OnceLock::new();
+    let spawner = SPAWNER.get_or_init(Spawner::new);
+    //let spawner = Spawner::new();
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    let fut = async move || {
-        let res = f.await;
-        tx.send(res).expect("expect to be able to send to oneshot");
-    };
-
-    runtime.spawn_blocking(fut);
-
-    py.allow_hreads(move || {
-        rx.blocking_recv()
-            .expect("expect to be able to receive from one shot")
-    })
+    debug!("waiting for func");
+    let out = py.allow_threads(|| spawner.wait_for(f))?;
+    debug!("done waiting for func");
+    out.to_py_err()
 }
 
 /// we need these two functions to go back and forth between IPC representations
@@ -234,6 +280,7 @@ pub fn prettify(batches: Bound<'_, PyList>) -> PyResult<String> {
 
 pub async fn make_client(exchange_addr: &str) -> Result<FlightClient, DataFusionError> {
     let url = format!("http://{exchange_addr}");
+    trace!("making client for {url}");
 
     let chan = Channel::from_shared(url.clone())
         .map_err(|e| internal_datafusion_err!("Cannot create channel from url {url}: {e}"))?;
@@ -242,6 +289,7 @@ pub async fn make_client(exchange_addr: &str) -> Result<FlightClient, DataFusion
         .await
         .map_err(|e| internal_datafusion_err!("Cannot connect to channel {e}"))?;
     let flight_client = FlightClient::new(channel);
+    trace!("done making client for {url}");
     Ok(flight_client)
 }
 
@@ -298,6 +346,28 @@ where
     Box::pin(out_stream)
 }
 
+pub fn reporting_stream(
+    name: &str,
+    in_stream: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    let schema = in_stream.schema();
+    let mut stream = Box::pin(in_stream);
+    let name = name.to_owned();
+
+    let out_stream = async_stream::stream! {
+        debug!("stream:{name}: attempting to read");
+        while let Some(batch) = stream.next().await {
+            match batch {
+                Ok(ref b) => debug!("stream:{name}: got batch of {} rows", b.num_rows()),
+                Err(ref e) => debug!("stream:{name}: got error {e}"),
+            };
+            yield batch;
+        };
+    };
+
+    Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
+}
+
 /// ParquetExecs do not correctly preserve their options when serialized to substrait.
 /// So we fix it here.
 ///
@@ -324,6 +394,7 @@ pub async fn collect_from_stage(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<SendableRecordBatchStream, DataFusionError> {
     let stage_ids_i_need = input_stage_ids(&plan)?;
+    debug!("collect_from_stage: stage_ids_i_need: {stage_ids_i_need:?}");
 
     // map of stage_id, partition -> Vec<FlightClient>
     let mut client_map = HashMap::new();
@@ -342,6 +413,7 @@ pub async fn collect_from_stage(
             "Cannot find stage addr {stage_id} in {:?}",
             stage_addrs
         ))?;
+        debug!(">collect_from_stage: stage {stage_id}: partiton_addrs: {partition_addrs:?}");
 
         for (partition, addrs) in partition_addrs {
             let mut flight_clients = vec![];
@@ -360,15 +432,17 @@ pub async fn collect_from_stage(
             client_map.insert((stage_id, *partition), Mutex::new(flight_clients));
         }
     }
-
-    let mut config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
+    trace!("making session config");
+    let config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
 
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
         .build();
+    trace!("making session context");
     let ctx = SessionContext::new_with_state(state);
 
+    trace!("calling execute plan");
     plan.execute(partition, ctx.task_ctx())
 }
 
@@ -479,7 +553,7 @@ impl LocalValidator {
         Self { ctx }
     }
 
-    pub fn register_parquet(&self, py: Python, name: String, path: String) -> PyResult<()> {
+    pub fn register_parquet(&self, py: Python, name: String, path: String) -> PyResult<String> {
         let options = ParquetReadOptions::default();
 
         let url = ListingTableUrl::parse(&path).to_py_err()?;
@@ -487,8 +561,13 @@ impl LocalValidator {
         maybe_register_object_store(&self.ctx, url.as_ref()).to_py_err()?;
         debug!("register_parquet: registering table {} at {}", name, path);
 
-        wait_for_future(py, self.ctx.register_parquet(&name, &path, options.clone()));
-        Ok(())
+        let ctx_clone = self.ctx.clone();
+        let fut = async move || {
+            ctx_clone.register_parquet(&name, &path, options).await?;
+            Ok::<_, DataFusionError>(String::from("hi"))
+        };
+
+        wait_for_future(py, fut())
     }
 
     #[pyo3(signature = (name, path, file_extension=".parquet"))]
@@ -511,25 +590,30 @@ impl LocalValidator {
             "register_listing_table: registering table {} at {}",
             name, path
         );
-        wait_for_future(
-            py,
-            self.ctx
-                .register_listing_table(name, path, options, None, None),
-        )
-        .to_py_err()
+        let ctx_clone = self.ctx.clone();
+        let name = name.to_owned();
+        let path = path.to_owned();
+        let fut = async move || {
+            ctx_clone
+                .register_listing_table(&name, &path, options, None, None)
+                .await
+        };
+
+        wait_for_future(py, fut())
     }
 
     #[pyo3(signature = (query))]
     fn collect_sql(&self, py: Python, query: String) -> PyResult<PyObject> {
-        let fut = async || {
-            let df = self.ctx.sql(&query).await?;
+        let ctx = self.ctx.clone();
+        let query = query.to_owned();
+        let fut = async move {
+            let df = ctx.sql(&query).await?;
             let batches = df.collect().await?;
 
             Ok::<_, DataFusionError>(batches)
         };
 
-        let batches = wait_for_future(py, fut())
-            .to_py_err()?
+        let batches = wait_for_future(py, fut)?
             .iter()
             .map(|batch| batch.to_pyarrow(py))
             .collect::<PyResult<Vec<_>>>()?;
@@ -658,6 +742,15 @@ mod test {
         let bytes = batch_to_ipc_helper(&batch).unwrap();
         let batch2 = ipc_to_batch_helper(&bytes).unwrap();
         assert_eq!(batch, batch2);
+    }
+
+    #[test]
+    fn test_wait_for_future() {
+        let fut = async || Ok::<i32, Box<()>>(5);
+        Python::with_gil(|py| {
+            let out = wait_for_future(py, fut()).unwrap();
+            assert_eq!(out, 5);
+        });
     }
 
     #[tokio::test]

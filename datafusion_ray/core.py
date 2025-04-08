@@ -361,9 +361,11 @@ class DFRayContextSupervisor:
         if len(self.stages) > 0:
             self.pool.release(list(self.stages.keys()))
 
-        remote_processors, remote_processor_keys, remote_addrs = (
-            await self.pool.acquire(len(stage_datas))
-        )
+        (
+            remote_processors,
+            remote_processor_keys,
+            remote_addrs,
+        ) = await self.pool.acquire(len(stage_datas))
         self.stages = {}
 
         for i, sd in enumerate(stage_datas):
@@ -517,6 +519,7 @@ class DFRayDataFrame:
     def collect(self) -> list[pa.RecordBatch]:
         if not self._batches:
             self.prepare()
+            log.debug
             reader = self.df.read_final_stage(self.last_stage_id, self.last_stage_addrs)
             log.debug("got reader")
             self._batches = list(reader)
@@ -696,7 +699,6 @@ class DFRayContext:
         self.ctx.register_listing_table(name, path, file_extention)
 
     def sql(self, query: str) -> DFRayDataFrame:
-
         df = self.ctx.sql(query)
 
         return DFRayDataFrame(

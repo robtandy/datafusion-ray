@@ -40,11 +40,11 @@ pub mod util;
 #[pymodule]
 fn _datafusion_ray_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     setup_logging();
-    m.addclass::<context::DFRayContext>()?;
+    m.add_class::<context::DFRayContext>()?;
     m.add_class::<dataframe::DFRayDataFrame>()?;
     m.add_class::<dataframe::PyDFRayStage>()?;
     m.add_class::<processor_service::DFRayProcessorService>()?;
-    m.add_lass::<proxy_service::DFRayProxyService>()?;
+    m.add_class::<proxy_service::DFRayProxyService>()?;
     m.add_class::<util::LocalValidator>()?;
     m.add_function(wrap_pyfunction!(util::prettify, m)?)?;
     Ok(())

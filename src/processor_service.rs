@@ -28,7 +28,6 @@ use datafusion::common::internal_datafusion_err;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_python::utils::wait_for_future;
 use futures::{Stream, TryStreamExt};
 use local_ip_address::local_ip;
 use log::{debug, error, info, trace};
@@ -51,7 +50,8 @@ use crate::flight::{FlightHandler, FlightServ};
 use crate::isolator::PartitionGroup;
 use crate::util::{
     ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, extract_ticket,
-    input_stage_ids, make_client, register_object_store_for_paths_in_plan,
+    input_stage_ids, make_client, register_object_store_for_paths_in_plan, reporting_stream,
+    wait_for_future,
 };
 
 /// a map of stage_id, partition to a list FlightClients that can serve
@@ -186,6 +186,7 @@ fn make_stream(
                 format!("Could not get partition stream from plan {e}")
             )
         })
+        .map(|s| reporting_stream("streamy", s))
         .map_err(|e| Status::internal(format!("Could not get partition stream from plan {e}")))?
         .map_err(|e| FlightError::from_external_error(Box::new(e)));
 
@@ -280,7 +281,9 @@ impl DFRayProcessorService {
         let my_local_ip = local_ip().to_py_err()?;
         let my_host_str = format!("{my_local_ip}:0");
 
-        self.listener = Some(wait_for_future(py, TcpListener::bind(&my_host_str)).to_py_err()?);
+        self.listener = Some(wait_for_future(py, async move {
+            TcpListener::bind(&my_host_str).await
+        })?);
 
         self.addr = Some(format!(
             "{}",
@@ -364,6 +367,7 @@ impl DFRayProcessorService {
                 .recv()
                 .await
                 .expect("problem receiving shutdown signal");
+            info!("received shutdown signal");
         };
 
         let service = FlightServ {
@@ -385,6 +389,7 @@ impl DFRayProcessorService {
                 .await
                 .inspect_err(|e| error!("{}, ERROR serving {e}", name))
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{e}")))?;
+            trace!("serve async block done");
             Ok::<(), Box<dyn Error + Send + Sync>>(())
         };
 

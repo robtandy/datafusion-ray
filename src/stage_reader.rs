@@ -17,7 +17,7 @@ use prost::Message;
 
 use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
-use crate::util::CombinedRecordBatchStream;
+use crate::util::{CombinedRecordBatchStream, reporting_stream};
 
 /// An [`ExecutionPlan`] that will produce a stream of batches fetched from another stage
 /// which is hosted by a [`crate::stage_service::StageService`] separated from a network boundary
@@ -143,17 +143,19 @@ impl ExecutionPlan for DFRayStageReaderExec {
             let mut error = false;
 
             let mut streams = vec![];
-            for mut client in clients {
+            for (i, mut client) in clients.into_iter().enumerate() {
                 let name = name.clone();
                 trace!("{name} Getting flight stream" );
                 match client.do_get(ticket.clone()).await {
                     Ok(flight_stream) => {
                         trace!("{name} Got flight stream. headers:{:?}", flight_stream.headers());
+                        let name_clone = name.clone();
                         let rbr_stream = RecordBatchStreamAdapter::new(schema.clone(),
                             flight_stream
                                 .map_err(move |e| internal_datafusion_err!("{} Error consuming flight stream: {}", name, e)));
 
                         streams.push(Box::pin(rbr_stream) as SendableRecordBatchStream);
+                        //streams.push(reporting_stream(format!("{name_clone} stage reader stream {i}").as_str(),Box::pin(rbr_stream)));
                     },
                     Err(e) => {
                         error = true;
