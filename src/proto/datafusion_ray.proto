@@ -44,8 +44,17 @@ message FlightTicketData {
   // stage id of the stream
   // parittion id of the stream
   bool dummy = 1;
-  uint64 partition = 2;
-  // used by the DFRayProxyService
-  string remote_host = 3;
+  uint64 stage_id = 2;
+  uint64 partition = 3;
 }
+
+message TicketStatementData {
+  // identity of the query we want to consume
+  string query_id = 1;
+  // stage to read from
+  uint64 stage_id = 2;
+  // partition we want 
+  uint64 partition = 3;
+}
+
 

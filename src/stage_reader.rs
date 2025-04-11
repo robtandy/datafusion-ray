@@ -129,8 +129,8 @@ impl ExecutionPlan for DFRayStageReaderExec {
 
         let ftd = FlightTicketData {
             dummy: false,
+            stage_id: self.stage_id as u64,
             partition: partition as u64,
-            remote_host: "".to_string(),
         };
 
         let ticket = Ticket {
@@ -155,7 +155,6 @@ impl ExecutionPlan for DFRayStageReaderExec {
                                 .map_err(move |e| internal_datafusion_err!("{} Error consuming flight stream: {}", name, e)));
 
                         streams.push(Box::pin(rbr_stream) as SendableRecordBatchStream);
-                        //streams.push(reporting_stream(format!("{name_clone} stage reader stream {i}").as_str(),Box::pin(rbr_stream)));
                     },
                     Err(e) => {
                         error = true;

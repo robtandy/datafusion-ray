@@ -212,13 +212,6 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     Ok(schema)
 }
 
-pub fn extract_ticket(ticket: Ticket) -> anyhow::Result<(usize, String)> {
-    let data = ticket.ticket;
-
-    let tic = FlightTicketData::decode(data)?;
-    Ok((tic.partition as usize, tic.remote_host))
-}
-
 /// produce a new SendableRecordBatchStream that will respect the rows
 /// limit in the batches that it produces.  
 ///
@@ -387,14 +380,11 @@ pub fn fix_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>, 
         .data)
 }
 
-pub async fn collect_from_stage(
-    stage_id: usize,
-    partition: usize,
+pub async fn get_client_map(
+    stage_ids: Vec<usize>,
     stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
-    plan: Arc<dyn ExecutionPlan>,
-) -> Result<SendableRecordBatchStream, DataFusionError> {
-    let stage_ids_i_need = input_stage_ids(&plan)?;
-    debug!("collect_from_stage: stage_ids_i_need: {stage_ids_i_need:?}");
+) -> Result<HashMap<(usize, usize), Mutex<Vec<FlightClient>>>, DataFusionError> {
+    debug!("get_client_map : stage_ids: {stage_ids:?}");
 
     // map of stage_id, partition -> Vec<FlightClient>
     let mut client_map = HashMap::new();
@@ -408,7 +398,7 @@ pub async fn collect_from_stage(
         FlightClient::new_from_inner(inner_clone)
     }
 
-    for stage_id in stage_ids_i_need {
+    for stage_id in stage_ids {
         let partition_addrs = stage_addrs.get(&stage_id).ok_or(internal_datafusion_err!(
             "Cannot find stage addr {stage_id} in {:?}",
             stage_addrs
@@ -432,6 +422,17 @@ pub async fn collect_from_stage(
             client_map.insert((stage_id, *partition), Mutex::new(flight_clients));
         }
     }
+    Ok(client_map)
+}
+
+pub async fn stream_from_stage(
+    partition: usize,
+    stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<SendableRecordBatchStream, DataFusionError> {
+    let stage_ids_i_need = input_stage_ids(&plan)?;
+    let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
+
     trace!("making session config");
     let config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
 

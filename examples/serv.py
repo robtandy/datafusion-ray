@@ -6,7 +6,7 @@ ray.init(runtime_env=df_ray_runtime_env)
 
 
 async def main():
-    proxy = core.DFRayProxy()
+    proxy = core.DFRayProxy(port=20200)
     proxy.register_listing_table("foo", "s3://rob-tandy-tmp/metrics/foo")
     print(f"listening on {proxy.addr()}")
     await proxy.serve()

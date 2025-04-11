@@ -31,6 +31,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{Stream, TryStreamExt};
 use local_ip_address::local_ip;
 use log::{debug, error, info, trace};
+use prost::Message;
 use tokio::net::TcpListener;
 
 use tonic::transport::Server;
@@ -48,8 +49,9 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::flight::{FlightHandler, FlightServ};
 use crate::isolator::PartitionGroup;
+use crate::protobuf::FlightTicketData;
 use crate::util::{
-    ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, extract_ticket,
+    ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, get_client_map,
     input_stage_ids, make_client, register_object_store_for_paths_in_plan, reporting_stream,
     wait_for_future,
 };
@@ -115,41 +117,7 @@ impl DFRayProcessorHandlerInner {
     ) -> DFResult<SessionContext> {
         let stage_ids_i_need = input_stage_ids(&plan)?;
 
-        // map of stage_id, partition -> Vec<FlightClient>
-        let mut client_map = HashMap::new();
-
-        // a map of address -> FlightClient which we use while building the client map above
-        // so that we don't create duplicate clients for the same address.
-        let mut clients = HashMap::new();
-
-        fn clone_flight_client(c: &FlightClient) -> FlightClient {
-            let inner_clone = c.inner().clone();
-            FlightClient::new_from_inner(inner_clone)
-        }
-
-        for stage_id in stage_ids_i_need {
-            let partition_addrs = stage_addrs.get(&stage_id).ok_or(internal_datafusion_err!(
-                "Cannot find stage addr {stage_id} in {:?}",
-                stage_addrs
-            ))?;
-
-            for (partition, addrs) in partition_addrs {
-                let mut flight_clients = vec![];
-                for addr in addrs {
-                    let client = match clients.entry(addr) {
-                        Entry::Occupied(o) => clone_flight_client(o.get()),
-                        Entry::Vacant(v) => {
-                            let client = make_client(addr).await?;
-                            let clone = clone_flight_client(&client);
-                            v.insert(client);
-                            clone
-                        }
-                    };
-                    flight_clients.push(client);
-                }
-                client_map.insert((stage_id, *partition), Mutex::new(flight_clients));
-            }
-        }
+        let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
 
         let mut config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
 
@@ -206,7 +174,7 @@ impl FlightHandler for DFRayProcessorHandler {
 
         let ticket = request.into_inner();
 
-        let (partition, _) = extract_ticket(ticket).map_err(|e| {
+        let ftd = FlightTicketData::decode(ticket.ticket).map_err(|e| {
             Status::internal(format!(
                 "{}, Unexpected error extracting ticket {e}",
                 self.name
@@ -215,7 +183,7 @@ impl FlightHandler for DFRayProcessorHandler {
 
         trace!(
             "{}, request for partition {} from {}",
-            self.name, partition, remote_addr
+            self.name, ftd.partition, remote_addr
         );
 
         let name = self.name.clone();
@@ -223,7 +191,7 @@ impl FlightHandler for DFRayProcessorHandler {
             .inner
             .read()
             .as_ref()
-            .map(|inner| make_stream(inner, partition))
+            .map(|inner| make_stream(inner, ftd.partition as usize))
             .ok_or_else(|| Status::internal(format!("{} No inner found", &name)))??;
 
         let out_stream = FlightDataEncoderBuilder::new()

@@ -514,13 +514,17 @@ class DFRayDataFrame:
         self.last_stage_addrs = ray.get(
             self.supervisor.get_stage_addrs.remote(self.last_stage_id)
         )
-        log.debug(f"last stage addrs {self.last_stage_addrs}")
+        self.last_stage_schema = self.df.final_schema()
+        self.last_stage_partitions = self.df.final_partitions()
+        log.debug(
+            f"last stage addrs {self.last_stage_addrs}, schema: {self.last_stage_schema}"
+        )
 
     def collect(self) -> list[pa.RecordBatch]:
         if not self._batches:
             self.prepare()
             log.debug
-            reader = self.df.read_final_stage(self.last_stage_id, self.last_stage_addrs)
+            reader = self.df.read_final_stage(self.last_stage_addrs)
             log.debug("got reader")
             self._batches = list(reader)
         return self._batches
@@ -561,6 +565,7 @@ class DFRayProxy:
         partitions_per_processor: int | None = None,
         processor_pool_min: int = 1,
         processor_pool_max: int = 100,
+        port=20200,
     ):
         self.batch_size = batch_size
         self.partitions_per_processor = partitions_per_processor
@@ -571,7 +576,7 @@ class DFRayProxy:
             DFRayProxyService,
         )
 
-        self.proxy = DFRayProxyService(self)
+        self.proxy = DFRayProxyService(self, port)
         self.proxy.start_up()
 
         self.ctx = DFRayContext(
@@ -580,7 +585,6 @@ class DFRayProxy:
             processor_pool_min=processor_pool_min,
             processor_pool_max=processor_pool_max,
         )
-        self.queries = {}
 
     def addr(self):
         return self.proxy.addr()
@@ -597,16 +601,20 @@ class DFRayProxy:
     def register_listing_table(self, name: str, path: str, file_extention="parquet"):
         self.ctx.register_listing_table(name, path, file_extention)
 
-    def prepare_query(self, query: str) -> tuple[str, dict[int, dict[int, list[str]]]]:
+    def prepare_query(self, query: str) -> str:
         query_id = new_friendly_name()
 
         df = self.ctx.sql(query)
         df.prepare()
-        last_stage_addrs = df.last_stage_addrs
+        log.debug(f"got last stage schema: {df.last_stage_schema}")
+        self.proxy.store(
+            query_id,
+            df.last_stage_schema,
+            df.last_stage_addrs,
+            df.last_stage_partitions,
+        )
 
-        self.queries[query_id] = last_stage_addrs
-
-        return query_id, last_stage_addrs
+        return query_id
 
     def __del__(self):
         print("cleaning up")

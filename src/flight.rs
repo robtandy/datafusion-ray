@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
+use parking_lot::RwLock;
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{

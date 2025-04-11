@@ -22,16 +22,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::array::RecordBatch;
+use arrow::datatypes::Schema;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
-use arrow_flight::{FlightClient, FlightDescriptor, FlightInfo};
+use arrow_flight::sql::{ProstMessageExt, TicketStatementQuery};
+use arrow_flight::{FlightClient, FlightDescriptor, FlightEndpoint, FlightInfo};
 use datafusion::common::internal_datafusion_err;
-use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::execution::{FunctionRegistry, SessionState, SessionStateBuilder};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
+use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use futures::{Stream, TryStreamExt};
 use local_ip_address::local_ip;
 use log::{debug, error, info, trace};
+use prost::Message;
+use pyo3::conversion::FromPyObjectBound;
 use tokio::net::TcpListener;
 
 use tonic::service::interceptor::InterceptorLayer;
@@ -53,75 +60,139 @@ use tracing::Span;
 
 use crate::flight::{FlightHandler, FlightServ, FlightSqlHandler, FlightSqlServ};
 use crate::isolator::PartitionGroup;
-use crate::protobuf::FlightTicketData;
+use crate::protobuf::{FlightTicketData, TicketStatementData};
+use crate::stage_reader::DFRayStageReaderExec;
 use crate::util::{
-    ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, extract_ticket,
-    input_stage_ids, make_client, register_object_store_for_paths_in_plan, wait_for_future,
+    ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, input_stage_ids,
+    make_client, register_object_store_for_paths_in_plan, stream_from_stage, wait_for_future,
 };
+
+type Addrs = HashMap<usize, HashMap<usize, Vec<String>>>;
 
 struct DFRayProxyHandler {
     py_inner: PyObject,
+    pub queries: RwLock<HashMap<String, (Schema, Addrs, usize)>>,
 }
-
-unsafe impl Send for DFRayProxyHandler {}
 
 impl DFRayProxyHandler {
     pub fn new(py_inner: PyObject) -> Self {
-        Self { py_inner }
+        let queries = RwLock::new(HashMap::new());
+        Self { py_inner, queries }
+    }
+    pub fn store(&self, query_id: String, schema: Schema, addrs: Addrs, partitions: usize) {
+        self.queries
+            .write()
+            .insert(query_id, (schema, addrs, partitions));
     }
 }
 
 #[async_trait]
 impl FlightSqlHandler for DFRayProxyHandler {
+    async fn get_flight_info_statement(
+        &self,
+        query: arrow_flight::sql::CommandStatementQuery,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let query_id = Python::with_gil(|py| {
+            let bound = self.py_inner.bind(py);
+            bound
+                .call_method1("prepare_query", (query.query,))
+                .and_then(|res| res.extract::<String>())
+        })
+        .map_err(|e| Status::internal(format!("Could not prepare query {e}")))?;
+
+        let (schema, addrs, partition_count) =
+            self.queries
+                .read()
+                .get(&query_id)
+                .cloned()
+                .ok_or(Status::internal(format!(
+                    "Could not find schema for query_id {query_id}"
+                )))?;
+
+        debug!(
+            "get flight info: query id {}, addrs {:?}, schema:{}",
+            query_id, addrs, schema
+        );
+
+        // there should only be ones stage in this map
+        assert!(addrs.len() == 1);
+
+        let mut fi = FlightInfo::new()
+            .try_with_schema(&schema)
+            .map_err(|e| Status::internal(format!("Could not create flight info {e}")))?;
+
+        for (partition, partition_addrs) in addrs.get(&0).unwrap() {
+            let endpoint = FlightEndpoint::new().with_ticket(Ticket::new(
+                TicketStatementQuery {
+                    statement_handle: TicketStatementData {
+                        query_id: query_id.clone(),
+                        stage_id: 0,
+                        partition: 0,
+                    }
+                    .encode_to_vec()
+                    .into(),
+                }
+                .as_any()
+                .encode_to_vec(),
+            ));
+            fi = fi.with_endpoint(endpoint);
+        }
+
+        Ok(Response::new(fi))
+    }
+
     async fn do_get_statement(
         &self,
         ticket: arrow_flight::sql::TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<crate::flight::DoGetStream>, Status> {
+        trace!("do_get_statement");
         let remote_addr = request
             .remote_addr()
             .map(|a| a.to_string())
             .unwrap_or("unknown".to_string());
 
-        let ticket = request.into_inner();
+        let tsd = TicketStatementData::decode(ticket.statement_handle)
+            .map_err(|e| Status::internal(format!("Cannot parse statement handle {e}")))?;
 
-        let (partition, remote_host) = extract_ticket(ticket.clone())
-            .map_err(|e| Status::internal(format!("Unexpected error extracting ticket {e}",)))?;
+        let (schema, addrs, partition_count) = self
+            .queries
+            .read()
+            .get(&tsd.query_id)
+            .cloned()
+            .ok_or(Status::internal(format!(
+                "Could not find schema for query_id {}",
+                tsd.query_id
+            )))?;
+        trace!("retrieved schema");
 
-        trace!("request for partition {} from {}", partition, remote_addr);
+        let plan = Arc::new(
+            DFRayStageReaderExec::try_new(
+                Partitioning::UnknownPartitioning(partition_count),
+                Arc::new(schema.clone()),
+                tsd.stage_id as usize,
+            )
+            .map_err(|e| Status::internal(format!("Unexpected error {e}")))?,
+        ) as Arc<dyn ExecutionPlan>;
 
-        let mut client = make_client(&remote_host)
+        trace!(
+            "request for partition {} from {}",
+            tsd.partition, remote_addr
+        );
+
+        let stream = stream_from_stage(tsd.partition as usize, addrs, plan)
             .await
-            .map_err(|e| Status::internal(format!("Unexpected error extracting ticket {e}",)))?;
-
-        let stream = client.do_get(ticket).await?;
+            .map_err(|e| {
+                Status::internal(format!("Unexpected error building stream from stage {e}"))
+            })?
+            .map_err(|e| FlightError::ExternalError(Box::new(e)));
 
         let out_stream = FlightDataEncoderBuilder::new()
             .build(stream)
             .map_err(move |e| Status::internal(format!("Unexpected error building stream {e}")));
 
         Ok(Response::new(Box::pin(out_stream)))
-    }
-
-    async fn get_flight_info_statement(
-        &self,
-        query: arrow_flight::sql::CommandStatementQuery,
-        request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
-        type Addrs = HashMap<usize, HashMap<usize, Vec<String>>>;
-
-        Python::with_gil(|py| {
-            let bound = self.py_inner.bind(py);
-            let result = bound.call_method1("prepare_query", (query.query,))?;
-            let (query_id, addrs) = result.extract::<(String, Addrs)>()?;
-
-            debug!("get flight info: query id {}, addrs {:?}", query_id, addrs);
-
-            let fi = FlightInfo::new().with_descriptor(FlightDescriptor::new_path(vec![query_id]));
-
-            Ok(Response::new(fi))
-        })
-        .map_err(|e: PyErr| Status::internal(format!("Unexpected error preparing query {e}")))
     }
 }
 
@@ -136,12 +207,13 @@ pub struct DFRayProxyService {
     addr: Option<String>,
     all_done_tx: Arc<Mutex<Sender<()>>>,
     all_done_rx: Option<Receiver<()>>,
+    port: usize,
 }
 
 #[pymethods]
 impl DFRayProxyService {
     #[new]
-    pub fn new(py_inner: PyObject) -> PyResult<Self> {
+    pub fn new(py_inner: PyObject, port: usize) -> PyResult<Self> {
         debug!("Creating DFRayProxyService!");
         let listener = None;
         let addr = None;
@@ -157,6 +229,26 @@ impl DFRayProxyService {
             addr,
             all_done_tx,
             all_done_rx: Some(all_done_rx),
+            port,
+        })
+    }
+
+    pub fn store(
+        &mut self,
+        py: Python,
+        query_id: String,
+        schema: PyObject,
+        addrs: PyObject,
+        partition_count: usize,
+    ) -> PyResult<()> {
+        Python::with_gil(|py| {
+            trace!("trying to decode schema");
+            let schema = Schema::from_pyarrow_bound(schema.bind(py))?;
+            trace!("schema: {:?}", schema);
+            let addrs = addrs.bind(py).extract::<Addrs>()?;
+
+            self.handler.store(query_id, schema, addrs, partition_count);
+            Ok(())
         })
     }
 
@@ -166,7 +258,7 @@ impl DFRayProxyService {
     /// and we will want to wait on this with ray.get()
     pub fn start_up(&mut self, py: Python) -> PyResult<()> {
         let my_local_ip = local_ip().to_py_err()?;
-        let my_host_str = format!("{my_local_ip}:0");
+        let my_host_str = format!("{my_local_ip}:{}", self.port);
 
         let fut = async move { TcpListener::bind(&my_host_str).await };
         self.listener = Some(wait_for_future(py, fut).to_py_err()?);
@@ -229,10 +321,9 @@ impl DFRayProxyService {
         let serv = async move {
             let out = Server::builder()
                 .add_service(svc)
-                //.serve_with_incoming_shutdown(
-                .serve_with_incoming(
+                .serve_with_incoming_shutdown(
                     tokio_stream::wrappers::TcpListenerStream::new(listener),
-                    //signal,
+                    signal,
                 )
                 .await
                 .inspect_err(|e| error!("ERROR serving {e}"))

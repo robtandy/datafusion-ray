@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::RecordBatch;
-use arrow::pyarrow::ToPyArrow;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::Transformed;
@@ -53,9 +53,9 @@ use crate::pre_fetch::PrefetchExec;
 use crate::stage::DFRayStageExec;
 use crate::stage_reader::DFRayStageReaderExec;
 use crate::util::ResultExt;
-use crate::util::collect_from_stage;
 use crate::util::display_plan_with_partition_counts;
 use crate::util::physical_plan_to_bytes;
+use crate::util::stream_from_stage;
 use crate::util::wait_for_future;
 
 /// Internal rust class beyind the DFRayDataFrame python object
@@ -243,17 +243,31 @@ impl DFRayDataFrame {
         Ok(PyLogicalPlan::new(self.df.clone().into_optimized_plan()?))
     }
 
+    fn final_schema(&self, py: Python) -> PyResult<Option<PyObject>> {
+        self.final_plan
+            .clone()
+            .map(|f| f.schema().to_pyarrow(py))
+            .transpose()
+    }
+
+    fn final_partitions(&self) -> PyResult<usize> {
+        self.final_plan
+            .as_ref()
+            .map(|f| f.output_partitioning().partition_count())
+            .ok_or(internal_datafusion_err!("final plan is None"))
+            .to_py_err()
+    }
+
     fn read_final_stage(
         &mut self,
         py: Python,
-        stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     ) -> PyResult<PyRecordBatchStream> {
         let plan = Arc::new(CoalescePartitionsExec::new(
             self.final_plan.clone().take().unwrap(),
         )) as Arc<dyn ExecutionPlan>;
 
-        let fut = async move || collect_from_stage(stage_id, 0, stage_addrs, plan).await;
+        let fut = async move || stream_from_stage(0, stage_addrs, plan).await;
 
         wait_for_future(py, fut())
             .map(PyRecordBatchStream::new)
