@@ -51,10 +51,6 @@ message FlightTicketData {
 message TicketStatementData {
   // identity of the query we want to consume
   string query_id = 1;
-  // stage to read from
-  uint64 stage_id = 2;
-  // partition we want 
-  uint64 partition = 3;
 }
 
 

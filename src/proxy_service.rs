@@ -71,7 +71,7 @@ type Addrs = HashMap<usize, HashMap<usize, Vec<String>>>;
 
 struct DFRayProxyHandler {
     py_inner: PyObject,
-    pub queries: RwLock<HashMap<String, (Schema, Addrs, usize)>>,
+    pub queries: RwLock<HashMap<String, (usize, Schema, Addrs, usize)>>,
 }
 
 impl DFRayProxyHandler {
@@ -79,10 +79,44 @@ impl DFRayProxyHandler {
         let queries = RwLock::new(HashMap::new());
         Self { py_inner, queries }
     }
-    pub fn store(&self, query_id: String, schema: Schema, addrs: Addrs, partitions: usize) {
+    pub fn store(
+        &self,
+        query_id: String,
+        last_stage_id: usize,
+        schema: Schema,
+        addrs: Addrs,
+        partitions: usize,
+    ) {
         self.queries
             .write()
-            .insert(query_id, (schema, addrs, partitions));
+            .insert(query_id, (last_stage_id, schema, addrs, partitions));
+    }
+
+    pub fn get_query_meta(
+        &self,
+        query_id: String,
+    ) -> Result<(usize, Schema, Addrs, usize), Status> {
+        Python::with_gil(|py| {
+            let bound = self.py_inner.bind(py);
+            bound
+                .call_method1("get_query_meta", (query_id.clone(),))
+                .and_then(|meta| {
+                    let last_stage_id = meta.getattr("last_stage_id")?.extract::<usize>()?;
+                    let last_stage_schema =
+                        Schema::from_pyarrow_bound(&meta.getattr("last_stage_schema")?)?;
+                    let last_stage_addsr = meta.getattr("last_stage_addrs")?.extract::<Addrs>()?;
+                    let last_stage_partition_count =
+                        meta.getattr("last_stage_partitions")?.extract::<usize>()?;
+
+                    Ok((
+                        last_stage_id,
+                        last_stage_schema,
+                        last_stage_addsr,
+                        last_stage_partition_count,
+                    ))
+                })
+        })
+        .map_err(|e| Status::internal(format!("Could not get query meta {e}")))
     }
 }
 
@@ -101,18 +135,12 @@ impl FlightSqlHandler for DFRayProxyHandler {
         })
         .map_err(|e| Status::internal(format!("Could not prepare query {e}")))?;
 
-        let (schema, addrs, partition_count) =
-            self.queries
-                .read()
-                .get(&query_id)
-                .cloned()
-                .ok_or(Status::internal(format!(
-                    "Could not find schema for query_id {query_id}"
-                )))?;
+        let (last_stage_id, schema, addrs, partition_count) =
+            self.get_query_meta(query_id.clone())?;
 
         debug!(
-            "get flight info: query id {}, addrs {:?}, schema:{}",
-            query_id, addrs, schema
+            "get flight info: query id {}, last_stage_id {}, addrs {:?}, schema:{}",
+            query_id, last_stage_id, addrs, schema
         );
 
         // there should only be ones stage in this map
@@ -122,13 +150,11 @@ impl FlightSqlHandler for DFRayProxyHandler {
             .try_with_schema(&schema)
             .map_err(|e| Status::internal(format!("Could not create flight info {e}")))?;
 
-        for (partition, partition_addrs) in addrs.get(&0).unwrap() {
+        for (partition, partition_addrs) in addrs.get(&last_stage_id).unwrap() {
             let endpoint = FlightEndpoint::new().with_ticket(Ticket::new(
                 TicketStatementQuery {
                     statement_handle: TicketStatementData {
                         query_id: query_id.clone(),
-                        stage_id: 0,
-                        partition: 0,
                     }
                     .encode_to_vec()
                     .into(),
@@ -156,32 +182,23 @@ impl FlightSqlHandler for DFRayProxyHandler {
         let tsd = TicketStatementData::decode(ticket.statement_handle)
             .map_err(|e| Status::internal(format!("Cannot parse statement handle {e}")))?;
 
-        let (schema, addrs, partition_count) = self
-            .queries
-            .read()
-            .get(&tsd.query_id)
-            .cloned()
-            .ok_or(Status::internal(format!(
-                "Could not find schema for query_id {}",
-                tsd.query_id
-            )))?;
+        let (last_stage_id, schema, addrs, partition_count) =
+            self.get_query_meta(tsd.query_id.clone())?;
+
         trace!("retrieved schema");
 
         let plan = Arc::new(
             DFRayStageReaderExec::try_new(
                 Partitioning::UnknownPartitioning(partition_count),
                 Arc::new(schema.clone()),
-                tsd.stage_id as usize,
+                last_stage_id,
             )
             .map_err(|e| Status::internal(format!("Unexpected error {e}")))?,
         ) as Arc<dyn ExecutionPlan>;
 
-        trace!(
-            "request for partition {} from {}",
-            tsd.partition, remote_addr
-        );
+        trace!("request for query_id {} from {}", tsd.query_id, remote_addr);
 
-        let stream = stream_from_stage(tsd.partition as usize, addrs, plan)
+        let stream = stream_from_stage(0 as usize, addrs, plan)
             .await
             .map_err(|e| {
                 Status::internal(format!("Unexpected error building stream from stage {e}"))
@@ -230,25 +247,6 @@ impl DFRayProxyService {
             all_done_tx,
             all_done_rx: Some(all_done_rx),
             port,
-        })
-    }
-
-    pub fn store(
-        &mut self,
-        py: Python,
-        query_id: String,
-        schema: PyObject,
-        addrs: PyObject,
-        partition_count: usize,
-    ) -> PyResult<()> {
-        Python::with_gil(|py| {
-            trace!("trying to decode schema");
-            let schema = Schema::from_pyarrow_bound(schema.bind(py))?;
-            trace!("schema: {:?}", schema);
-            let addrs = addrs.bind(py).extract::<Addrs>()?;
-
-            self.handler.store(query_id, schema, addrs, partition_count);
-            Ok(())
         })
     }
 

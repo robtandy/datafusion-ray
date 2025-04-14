@@ -53,10 +53,4 @@ pub struct TicketStatementData {
     /// identity of the query we want to consume
     #[prost(string, tag = "1")]
     pub query_id: ::prost::alloc::string::String,
-    /// stage to read from
-    #[prost(uint64, tag = "2")]
-    pub stage_id: u64,
-    /// partition we want
-    #[prost(uint64, tag = "3")]
-    pub partition: u64,
 }

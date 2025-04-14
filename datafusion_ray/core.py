@@ -190,12 +190,19 @@ class DFRayProcessorPool:
 
         processors = [self.pool[sk] for sk in processor_keys]
         addrs = [self.addrs[sk] for sk in processor_keys]
+
+        log.debug(
+            f"DFRayProcessorPool: acquired: {len(self.acquired)} available: {len(self.available)} max:{self.max_processors}"
+        )
         return (processors, processor_keys, addrs)
 
     def release(self, processor_keys: list[str]):
         for processor_key in processor_keys:
             self.acquired.remove(processor_key)
             self.available.add(processor_key)
+        log.debug(
+            f"DFRayProcessorPool Released {len(processor_keys)}: acquired: {len(self.acquired)} available: {len(self.available)} max:{self.max_processors}"
+        )
 
     def _new_processor(self):
         self.processors_ready.clear()
@@ -557,6 +564,31 @@ class DFRayDataFrame:
         call_sync(wait_for([ref], "creating ray stages"))
 
 
+@dataclass
+class QueryMeta:
+    query_id: str
+    last_stage_id: int
+    last_stage_schema: pa.Schema
+    last_stage_addrs: dict[int, dict[int, list[str]]]
+    last_stage_partitions: int
+
+
+@ray.remote(num_cpus=0.01, scheduling_strategy="SPREAD")
+class DFRayQueryStore:
+    def __init__(self):
+        self.queries = {}
+
+    def store(self, meta: QueryMeta) -> None:
+        self.queries[meta.query_id] = meta
+        log.info(f"DFRayQueryStore stored {meta.query_id} => {meta}")
+
+    def retrieve(self, query_id) -> QueryMeta:
+        if query_id not in self.queries:
+            raise Exception(f"Query {query_id} not found")
+
+        return self.queries[query_id]
+
+
 class DFRayProxy:
     def __init__(
         self,
@@ -578,6 +610,10 @@ class DFRayProxy:
 
         self.proxy = DFRayProxyService(self, port)
         self.proxy.start_up()
+
+        self.query_store = DFRayQueryStore.options(
+            name="DFRayQueryStore", get_if_exists=True
+        ).remote()
 
         self.ctx = DFRayContext(
             prefetch_buffer_size=prefetch_buffer_size,
@@ -607,14 +643,21 @@ class DFRayProxy:
         df = self.ctx.sql(query)
         df.prepare()
         log.debug(f"got last stage schema: {df.last_stage_schema}")
-        self.proxy.store(
-            query_id,
-            df.last_stage_schema,
-            df.last_stage_addrs,
-            df.last_stage_partitions,
+
+        self.query_store.store.remote(
+            QueryMeta(
+                query_id,
+                df.last_stage_id,
+                df.last_stage_schema,
+                df.last_stage_addrs,
+                df.last_stage_partitions,
+            )
         )
 
         return query_id
+
+    def get_query_meta(self, query_id: str):
+        return ray.get(self.query_store.retrieve.remote(query_id))
 
     def __del__(self):
         print("cleaning up")
