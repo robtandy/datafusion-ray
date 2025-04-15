@@ -1,4 +1,6 @@
 from datafusion_ray import core, df_ray_runtime_env
+import logging
+import os
 import ray
 import asyncio
 
@@ -14,7 +16,10 @@ async def main(port: int, processor_pool_min: int, processor_pool_max: int):
         processor_pool_min=processor_pool_min,
         processor_pool_max=processor_pool_max,
     )
-    print(f"listening on {proxy.addr()}")
+    log_level = os.environ.get("DATAFUSION_RAY_LOG_LEVEL", "WARN").upper()
+    log = logging.getLogger("serv_py")
+    log.setLevel(log_level)
+    log.info(f"listening on {proxy.addr()}")
     await proxy.serve()
 
 
