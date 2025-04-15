@@ -7,11 +7,6 @@ import click
 
 
 async def main(port: int, processor_pool_min: int, processor_pool_max: int):
-    proxy_meta = core.DFRayProxyMeta.options(
-        name="DFRayProxyMeta", get_if_exists=True
-    ).remote()
-    proxy_meta.add_table.remote("foo", "/Users/rob.tandy/tmp/tpch/customer.parquet")
-
     proxy = core.DFRayProxy(
         port=port,
         processor_pool_min=processor_pool_min,
