@@ -55,7 +55,7 @@ setup_logging()
 _log_level = os.environ.get("DATAFUSION_RAY_LOG_LEVEL", "ERROR").upper()
 _rust_backtrace = os.environ.get("RUST_BACKTRACE", "0")
 df_ray_runtime_env = {
-    "worker_process_setup_hook": setup_logging,
+    "worker_process_setup_hook": "setup_logging",
     "env_vars": {
         "DATAFUSION_RAY_LOG_LEVEL": _log_level,
         "RAY_worker_niceness": "0",
