@@ -241,8 +241,7 @@ impl DFRayProxyService {
     /// from new() because Ray does not let you wait (AFAICT) on Actor inits to complete
     /// and we will want to wait on this with ray.get()
     pub fn start_up(&mut self, py: Python) -> PyResult<()> {
-        let my_local_ip = local_ip().to_py_err()?;
-        let my_host_str = format!("{my_local_ip}:{}", self.port);
+        let my_host_str = format!("0.0.0.0:{}", self.port);
 
         let fut = async move { TcpListener::bind(&my_host_str).await };
         self.listener = Some(wait_for_future(py, fut).to_py_err()?);
