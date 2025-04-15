@@ -19,14 +19,13 @@ use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext};
-use datafusion_python::utils::wait_for_future;
 use log::debug;
 use pyo3::prelude::*;
 use std::sync::Arc;
 
 use crate::dataframe::DFRayDataFrame;
 use crate::physical::RayStageOptimizerRule;
-use crate::util::{maybe_register_object_store, ResultExt};
+use crate::util::{ResultExt, maybe_register_object_store, wait_for_future};
 
 /// Internal Session Context object for the python class DFRayContext
 #[pyclass]
@@ -62,8 +61,9 @@ impl DFRayContext {
         maybe_register_object_store(&self.ctx, url.as_ref()).to_py_err()?;
         debug!("register_parquet: registering table {} at {}", name, path);
 
-        wait_for_future(py, self.ctx.register_parquet(&name, &path, options.clone()))?;
-        Ok(())
+        let ctx = self.ctx.clone();
+        let fut = async move || ctx.register_parquet(&name, &path, options).await;
+        wait_for_future(py, fut())
     }
 
     pub fn register_csv(&self, py: Python, name: String, path: String) -> PyResult<()> {
@@ -74,8 +74,9 @@ impl DFRayContext {
         maybe_register_object_store(&self.ctx, url.as_ref()).to_py_err()?;
         debug!("register_csv: registering table {} at {}", name, path);
 
-        wait_for_future(py, self.ctx.register_csv(&name, &path, options.clone()))?;
-        Ok(())
+        let ctx = self.ctx.clone();
+        let fut = async move || ctx.register_csv(&name, &path, options).await;
+        wait_for_future(py, fut())
     }
 
     #[pyo3(signature = (name, path, file_extension=".parquet"))]
@@ -98,18 +99,24 @@ impl DFRayContext {
             "register_listing_table: registering table {} at {}",
             name, path
         );
-        wait_for_future(
-            py,
-            self.ctx
-                .register_listing_table(name, path, options, None, None),
-        )
-        .to_py_err()
+        let ctx = self.ctx.clone();
+        let name = name.to_owned();
+        let path = path.to_owned();
+        let fut = async move || {
+            ctx.register_listing_table(name, path, options, None, None)
+                .await
+        };
+        wait_for_future(py, fut())
     }
 
     pub fn sql(&self, py: Python, query: String) -> PyResult<DFRayDataFrame> {
-        let df = wait_for_future(py, self.ctx.sql(&query))?;
+        let ctx = self.ctx.clone();
+        let query = query.to_owned();
+        let options = ListingOptions::new(Arc::new(ParquetFormat::new()));
 
-        Ok(DFRayDataFrame::new(df))
+        let fut = async move { ctx.sql(&query).await.map(DFRayDataFrame::new) };
+
+        wait_for_future(py, fut)
     }
 
     pub fn set(&self, option: String, value: String) -> PyResult<()> {

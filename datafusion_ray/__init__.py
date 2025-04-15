@@ -22,8 +22,8 @@ except ImportError:
 
 from .core import DFRayContext, df_ray_runtime_env
 
-from . import util
+from . import util, core
 
-__all__ = ["DFRayContext", "df_ray_runtime_env", "util"]
+__all__ = ["DFRayContext", "df_ray_runtime_env", "util", "core"]
 
 __version__ = importlib_metadata.version(__name__)

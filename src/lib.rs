@@ -32,6 +32,7 @@ pub mod max_rows;
 pub mod physical;
 pub mod pre_fetch;
 pub mod processor_service;
+pub mod proxy_service;
 pub mod stage;
 pub mod stage_reader;
 pub mod util;
@@ -43,6 +44,7 @@ fn _datafusion_ray_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<dataframe::DFRayDataFrame>()?;
     m.add_class::<dataframe::PyDFRayStage>()?;
     m.add_class::<processor_service::DFRayProcessorService>()?;
+    m.add_class::<proxy_service::DFRayProxyService>()?;
     m.add_class::<util::LocalValidator>()?;
     m.add_function(wrap_pyfunction!(util::prettify, m)?)?;
     Ok(())

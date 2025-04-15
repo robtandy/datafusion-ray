@@ -1,9 +1,11 @@
+use std::any::type_name;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::future::Future;
 use std::io::Cursor;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -32,9 +34,10 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use datafusion_python::utils::wait_for_future;
+use futures::channel::oneshot;
 use futures::{Stream, StreamExt};
 use log::debug;
+use log::trace;
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
@@ -42,6 +45,7 @@ use object_store::http::HttpBuilder;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
+use tokio::runtime::{self, Runtime};
 use tonic::transport::Channel;
 use url::Url;
 
@@ -69,6 +73,71 @@ where
             ))),
         }
     }
+}
+
+struct Spawner {
+    runtime: Arc<Runtime>,
+}
+
+impl Spawner {
+    fn new() -> Self {
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("can build runtime"),
+        );
+        Self { runtime }
+    }
+
+    fn wait_for<F>(&self, f: F) -> PyResult<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send,
+    {
+        //let runtime = self.runtime.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
+        let fut = async move { tx.send(f.await) };
+        let _guard = self.runtime.enter();
+
+        tokio::spawn(fut);
+
+        let out = std::thread::spawn(move || rx.recv()).join().to_py_err()?;
+        out.to_py_err()
+
+        /*std::thread::scope(|s| {
+            debug!("spawning thread in scope");
+            let out = s
+                .spawn(move || {
+                    debug!("blocking on func");
+                    let out = runtime.run(f);
+                    debug!("done blocking on func");
+                    out
+                })
+                .join()
+                .to_py_err();
+            debug!("done spawning thread in scope");
+            out
+        })*/
+    }
+}
+
+pub fn wait_for_future<F, T, E>(py: Python, f: F) -> PyResult<T>
+where
+    F: Future<Output = Result<T, E>> + Send + 'static,
+    F::Output: Send,
+    E: std::fmt::Debug,
+{
+    //return datafusion_python::utils::wait_for_future(py, f).to_py_err();
+    static SPAWNER: OnceLock<Spawner> = OnceLock::new();
+    let spawner = SPAWNER.get_or_init(Spawner::new);
+    //let spawner = Spawner::new();
+
+    debug!("waiting for func");
+    let out = py.allow_threads(|| spawner.wait_for(f))?;
+    debug!("done waiting for func");
+    out.to_py_err()
 }
 
 /// we need these two functions to go back and forth between IPC representations
@@ -143,13 +212,6 @@ pub fn flight_data_to_schema(flight_data: &FlightData) -> anyhow::Result<SchemaR
     Ok(schema)
 }
 
-pub fn extract_ticket(ticket: Ticket) -> anyhow::Result<usize> {
-    let data = ticket.ticket;
-
-    let tic = FlightTicketData::decode(data)?;
-    Ok(tic.partition as usize)
-}
-
 /// produce a new SendableRecordBatchStream that will respect the rows
 /// limit in the batches that it produces.  
 ///
@@ -211,6 +273,7 @@ pub fn prettify(batches: Bound<'_, PyList>) -> PyResult<String> {
 
 pub async fn make_client(exchange_addr: &str) -> Result<FlightClient, DataFusionError> {
     let url = format!("http://{exchange_addr}");
+    trace!("making client for {url}");
 
     let chan = Channel::from_shared(url.clone())
         .map_err(|e| internal_datafusion_err!("Cannot create channel from url {url}: {e}"))?;
@@ -219,6 +282,7 @@ pub async fn make_client(exchange_addr: &str) -> Result<FlightClient, DataFusion
         .await
         .map_err(|e| internal_datafusion_err!("Cannot connect to channel {e}"))?;
     let flight_client = FlightClient::new(channel);
+    trace!("done making client for {url}");
     Ok(flight_client)
 }
 
@@ -275,6 +339,28 @@ where
     Box::pin(out_stream)
 }
 
+pub fn reporting_stream(
+    name: &str,
+    in_stream: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    let schema = in_stream.schema();
+    let mut stream = Box::pin(in_stream);
+    let name = name.to_owned();
+
+    let out_stream = async_stream::stream! {
+        debug!("stream:{name}: attempting to read");
+        while let Some(batch) = stream.next().await {
+            match batch {
+                Ok(ref b) => debug!("stream:{name}: got batch of {} rows", b.num_rows()),
+                Err(ref e) => debug!("stream:{name}: got error {e}"),
+            };
+            yield batch;
+        };
+    };
+
+    Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
+}
+
 /// ParquetExecs do not correctly preserve their options when serialized to substrait.
 /// So we fix it here.
 ///
@@ -294,25 +380,70 @@ pub fn fix_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>, 
         .data)
 }
 
-pub async fn collect_from_stage(
-    stage_id: usize,
-    partition: usize,
-    stage_addr: &str,
-    plan: Arc<dyn ExecutionPlan>,
-) -> Result<SendableRecordBatchStream, DataFusionError> {
+pub async fn get_client_map(
+    stage_ids: Vec<usize>,
+    stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
+) -> Result<HashMap<(usize, usize), Mutex<Vec<FlightClient>>>, DataFusionError> {
+    debug!("get_client_map : stage_ids: {stage_ids:?}");
+
+    // map of stage_id, partition -> Vec<FlightClient>
     let mut client_map = HashMap::new();
 
-    let client = make_client(stage_addr).await?;
+    // a map of address -> FlightClient which we use while building the client map above
+    // so that we don't create duplicate clients for the same address.
+    let mut clients = HashMap::new();
 
-    client_map.insert((stage_id, partition), Mutex::new(vec![client]));
+    fn clone_flight_client(c: &FlightClient) -> FlightClient {
+        let inner_clone = c.inner().clone();
+        FlightClient::new_from_inner(inner_clone)
+    }
+
+    for stage_id in stage_ids {
+        let partition_addrs = stage_addrs.get(&stage_id).ok_or(internal_datafusion_err!(
+            "Cannot find stage addr {stage_id} in {:?}",
+            stage_addrs
+        ))?;
+        debug!(">collect_from_stage: stage {stage_id}: partiton_addrs: {partition_addrs:?}");
+
+        for (partition, addrs) in partition_addrs {
+            let mut flight_clients = vec![];
+            for addr in addrs {
+                let client = match clients.entry(addr) {
+                    Entry::Occupied(o) => clone_flight_client(o.get()),
+                    Entry::Vacant(v) => {
+                        let client = make_client(addr).await?;
+                        let clone = clone_flight_client(&client);
+                        v.insert(client);
+                        clone
+                    }
+                };
+                flight_clients.push(client);
+            }
+            client_map.insert((stage_id, *partition), Mutex::new(flight_clients));
+        }
+    }
+    Ok(client_map)
+}
+
+pub async fn stream_from_stage(
+    partition: usize,
+    stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<SendableRecordBatchStream, DataFusionError> {
+    let stage_ids_i_need = input_stage_ids(&plan)?;
+    let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
+
+    trace!("making session config");
     let config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
 
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
         .build();
+    trace!("making session context");
     let ctx = SessionContext::new_with_state(state);
 
+    trace!("calling execute plan");
     plan.execute(partition, ctx.task_ctx())
 }
 
@@ -423,7 +554,7 @@ impl LocalValidator {
         Self { ctx }
     }
 
-    pub fn register_parquet(&self, py: Python, name: String, path: String) -> PyResult<()> {
+    pub fn register_parquet(&self, py: Python, name: String, path: String) -> PyResult<String> {
         let options = ParquetReadOptions::default();
 
         let url = ListingTableUrl::parse(&path).to_py_err()?;
@@ -431,8 +562,13 @@ impl LocalValidator {
         maybe_register_object_store(&self.ctx, url.as_ref()).to_py_err()?;
         debug!("register_parquet: registering table {} at {}", name, path);
 
-        wait_for_future(py, self.ctx.register_parquet(&name, &path, options.clone()))?;
-        Ok(())
+        let ctx_clone = self.ctx.clone();
+        let fut = async move || {
+            ctx_clone.register_parquet(&name, &path, options).await?;
+            Ok::<_, DataFusionError>(String::from("hi"))
+        };
+
+        wait_for_future(py, fut())
     }
 
     #[pyo3(signature = (name, path, file_extension=".parquet"))]
@@ -455,25 +591,30 @@ impl LocalValidator {
             "register_listing_table: registering table {} at {}",
             name, path
         );
-        wait_for_future(
-            py,
-            self.ctx
-                .register_listing_table(name, path, options, None, None),
-        )
-        .to_py_err()
+        let ctx_clone = self.ctx.clone();
+        let name = name.to_owned();
+        let path = path.to_owned();
+        let fut = async move || {
+            ctx_clone
+                .register_listing_table(&name, &path, options, None, None)
+                .await
+        };
+
+        wait_for_future(py, fut())
     }
 
     #[pyo3(signature = (query))]
     fn collect_sql(&self, py: Python, query: String) -> PyResult<PyObject> {
-        let fut = async || {
-            let df = self.ctx.sql(&query).await?;
+        let ctx = self.ctx.clone();
+        let query = query.to_owned();
+        let fut = async move {
+            let df = ctx.sql(&query).await?;
             let batches = df.collect().await?;
 
             Ok::<_, DataFusionError>(batches)
         };
 
-        let batches = wait_for_future(py, fut())
-            .to_py_err()?
+        let batches = wait_for_future(py, fut)?
             .iter()
             .map(|batch| batch.to_pyarrow(py))
             .collect::<PyResult<Vec<_>>>()?;
@@ -587,7 +728,7 @@ mod test {
         array::Int32Array,
         datatypes::{DataType, Field, Schema},
     };
-    
+
     use futures::stream;
 
     use super::*;
@@ -604,12 +745,22 @@ mod test {
         assert_eq!(batch, batch2);
     }
 
+    #[test]
+    fn test_wait_for_future() {
+        let fut = async || Ok::<i32, Box<()>>(5);
+        Python::with_gil(|py| {
+            let out = wait_for_future(py, fut()).unwrap();
+            assert_eq!(out, 5);
+        });
+    }
+
     #[tokio::test]
     async fn test_max_rows_stream() {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![
-            1, 2, 3, 4, 5, 6, 7, 8,
-        ]))])
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]))],
+        )
         .unwrap();
 
         // 24 total rows

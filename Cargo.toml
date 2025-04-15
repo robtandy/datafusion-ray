@@ -17,7 +17,7 @@
 
 [package]
 name = "datafusion_ray"
-description = "DataFusion on Ray"
+description = "DataFusion distributed execution on Ray Clusters"
 homepage = "https://github.com/apache/datafusion-ray"
 repository = "https://github.com/apache/datafusion-ray"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -31,7 +31,7 @@ build = "build.rs"
 [dependencies]
 anyhow = "1"
 arrow = { version = "54", features = ["pyarrow", "ipc"] }
-arrow-flight = "54"
+arrow-flight = { version = "54", features = ["flight-sql-experimental"] }
 async-stream = "0.3"
 async-channel = "2.3"
 bytesize = "1.3"
@@ -75,6 +75,9 @@ tonic = { version = "0.12.3", default-features = false, features = [
   "codegen",
   "prost",
 ] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
 uuid = "1.11.0"
 url = "2"
 

@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::RecordBatch;
-use arrow::pyarrow::ToPyArrow;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use datafusion::common::internal_datafusion_err;
 use datafusion::common::internal_err;
 use datafusion::common::tree_node::Transformed;
@@ -25,6 +25,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -34,14 +35,15 @@ use datafusion::prelude::DataFrame;
 use datafusion_python::errors::PyDataFusionError;
 use datafusion_python::physical_plan::PyExecutionPlan;
 use datafusion_python::sql::logical::PyLogicalPlan;
-use datafusion_python::utils::wait_for_future;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use log::debug;
 use log::trace;
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -51,9 +53,10 @@ use crate::pre_fetch::PrefetchExec;
 use crate::stage::DFRayStageExec;
 use crate::stage_reader::DFRayStageReaderExec;
 use crate::util::ResultExt;
-use crate::util::collect_from_stage;
 use crate::util::display_plan_with_partition_counts;
 use crate::util::physical_plan_to_bytes;
+use crate::util::stream_from_stage;
+use crate::util::wait_for_future;
 
 /// Internal rust class beyind the DFRayDataFrame python object
 ///
@@ -67,6 +70,7 @@ use crate::util::physical_plan_to_bytes;
 /// The second role of this object is to be able to fetch record batches from the final_
 /// stage in the plan and return them to python.
 #[pyclass]
+#[derive(Debug)]
 pub struct DFRayDataFrame {
     /// holds the logical plan of the query we will execute
     df: DataFrame,
@@ -192,10 +196,6 @@ impl DFRayDataFrame {
             .pop()
             .ok_or(internal_datafusion_err!("No stages found"))?;
 
-        if last_stage.num_output_partitions() > 1 {
-            return internal_err!("Last stage expected to have one partition").to_py_err();
-        }
-
         last_stage = PyDFRayStage::new(
             last_stage.stage_id,
             Arc::new(MaxRowsExec::new(
@@ -243,23 +243,35 @@ impl DFRayDataFrame {
         Ok(PyLogicalPlan::new(self.df.clone().into_optimized_plan()?))
     }
 
+    fn final_schema(&self, py: Python) -> PyResult<Option<PyObject>> {
+        self.final_plan
+            .clone()
+            .map(|f| f.schema().to_pyarrow(py))
+            .transpose()
+    }
+
+    fn final_partitions(&self) -> PyResult<usize> {
+        self.final_plan
+            .as_ref()
+            .map(|f| f.output_partitioning().partition_count())
+            .ok_or(internal_datafusion_err!("final plan is None"))
+            .to_py_err()
+    }
+
     fn read_final_stage(
         &mut self,
         py: Python,
-        stage_id: usize,
-        stage_addr: &str,
+        stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     ) -> PyResult<PyRecordBatchStream> {
-        wait_for_future(
-            py,
-            collect_from_stage(
-                stage_id,
-                0,
-                stage_addr,
-                self.final_plan.take().unwrap().clone(),
-            ),
-        )
-        .map(PyRecordBatchStream::new)
-        .to_py_err()
+        let plan = Arc::new(CoalescePartitionsExec::new(
+            self.final_plan.clone().take().unwrap(),
+        )) as Arc<dyn ExecutionPlan>;
+
+        let fut = async move || stream_from_stage(0, stage_addrs, plan).await;
+
+        wait_for_future(py, fut())
+            .map(PyRecordBatchStream::new)
+            .to_py_err()
     }
 }
 
@@ -434,16 +446,20 @@ impl PyRecordBatchStream {
 
 #[pymethods]
 impl PyRecordBatchStream {
-    fn next(&mut self, py: Python) -> PyResult<PyObject> {
+    fn next(&mut self, py: Python) -> PyResult<Option<PyObject>> {
         let stream = self.stream.clone();
-        wait_for_future(py, next_stream(stream, true)).and_then(|b| b.to_pyarrow(py))
+        let maybe_batch = wait_for_future(py, next_stream(stream, true))?;
+
+        maybe_batch.map(|b| b.to_pyarrow(py)).transpose()
     }
 
-    fn __next__(&mut self, py: Python) -> PyResult<PyObject> {
+    fn __next__(&mut self, py: Python) -> PyResult<Option<PyObject>> {
+        trace!("next");
         self.next(py)
     }
 
     fn __anext__<'py>(&'py self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        trace!("anext");
         let stream = self.stream.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, next_stream(stream, false))
     }
@@ -460,19 +476,27 @@ impl PyRecordBatchStream {
 async fn next_stream(
     stream: Arc<Mutex<SendableRecordBatchStream>>,
     sync: bool,
-) -> PyResult<PyRecordBatch> {
+) -> PyResult<Option<PyRecordBatch>> {
     let mut stream = stream.lock().await;
     match stream.next().await {
-        Some(Ok(batch)) => Ok(batch.into()),
-        Some(Err(e)) => Err(PyDataFusionError::from(e))?,
+        Some(Ok(batch)) => {
+            debug!("pyrecordbatchstream got {:?} rows", batch.num_rows());
+            Ok(Some(batch.into()))
+        }
+        Some(Err(e)) => {
+            debug!("pyrecordbatchstream got error {}", e);
+            Err(PyDataFusionError::from(e))?
+        }
         None => {
+            debug!("pyrecordbatchstream got none");
             // Depending on whether the iteration is sync or not, we raise either a
             // StopIteration or a StopAsyncIteration
-            if sync {
+            /*if sync {
                 Err(PyStopIteration::new_err("stream exhausted"))
             } else {
                 Err(PyStopAsyncIteration::new_err("stream exhausted"))
-            }
+            }*/
+            Ok(None)
         }
     }
 }
