@@ -3,6 +3,7 @@ import logging
 import os
 import ray
 import asyncio
+import click
 
 
 async def main(port: int, processor_pool_min: int, processor_pool_max: int):
@@ -23,39 +24,37 @@ async def main(port: int, processor_pool_min: int, processor_pool_max: int):
     await proxy.serve()
 
 
+@click.command()
+@click.option("--ray-address", type=str, default="auto")
+@click.option("--ray-namespace", type=str, default="dfray")
+@click.option("--port", type=int, default=20200, help="Port to run the server on.")
+@click.option(
+    "--processor-pool-min",
+    type=int,
+    default=10,
+    help="Minimum size of the processor pool.",
+)
+@click.option(
+    "--processor-pool-max",
+    type=int,
+    default=100,
+    help="Maximum size of the processor pool.",
+)
+def cli(
+    ray_address: str,
+    ray_namespace: str,
+    port: int,
+    processor_pool_min: int,
+    processor_pool_max: int,
+):
+    ray.init(
+        address=ray_address,
+        runtime_env=df_ray_runtime_env,
+        namespace=ray_namespace,
+    )
+    print("Connecting to Ray cluster at:", ray_address)
+    asyncio.run(main(port, processor_pool_min, processor_pool_max))
+
+
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run the DFRayProxy server.")
-    parser.add_argument(
-        "--port", type=int, default=20200, help="Port to run the server on."
-    )
-    parser.add_argument(
-        "--processor_pool_min",
-        type=int,
-        default=10,
-        help="Minimum size of the processor pool.",
-    )
-    parser.add_argument(
-        "--processor_pool_max",
-        type=int,
-        default=100,
-        help="Maximum size of the processor pool.",
-    )
-    parser.add_argument(
-        "--ray-address",
-        type=str,
-        default="auto",
-        help="Address of the ray clsuter",
-    )
-    args = parser.parse_args()
-
-    ray.init(address=args.ray_address, runtime_env=df_ray_runtime_env)
-
-    asyncio.run(
-        main(
-            port=args.port,
-            processor_pool_min=args.processor_pool_min,
-            processor_pool_max=args.processor_pool_max,
-        )
-    )
+    cli()
