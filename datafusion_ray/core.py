@@ -654,7 +654,7 @@ class DFRayProxy:
         # as it can change as its held in the DFRayProxyMeta named Actor
         # we are breaking an abstraction here so should refactor at some point
         self.ctx.ctx = DFRayContextInternal()
-        for table, path in self.proxy_meta.get_tables.remote().items():
+        for table, path in ray.get(self.proxy_meta.get_tables.remote()).items():
             log.debug(f"registering table {table} -> {path}")
             self.ctx.register_listing_table(table, path)
 
