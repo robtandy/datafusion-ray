@@ -574,19 +574,29 @@ class QueryMeta:
 
 
 @ray.remote(num_cpus=0.01, scheduling_strategy="SPREAD")
-class DFRayQueryStore:
+class DFRayProxyMeta:
     def __init__(self):
         self.queries = {}
+        self.tables = {}
 
     def store(self, meta: QueryMeta) -> None:
         self.queries[meta.query_id] = meta
-        log.info(f"DFRayQueryStore stored {meta.query_id} => {meta}")
+        log.info(f"DFRayProxyMeta {meta.query_id} => {meta}")
 
     def retrieve(self, query_id) -> QueryMeta:
         if query_id not in self.queries:
             raise Exception(f"Query {query_id} not found")
 
         return self.queries[query_id]
+
+    def add_table(self, table: str, path: str):
+        self.tables[table] = path
+
+    def delete_table(self, table: str):
+        del self.tables[table]
+
+    def get_tables(self) -> dict[str, str]:
+        return self.tables
 
 
 class DFRayProxy:
@@ -611,8 +621,8 @@ class DFRayProxy:
         self.proxy = DFRayProxyService(self, port)
         self.proxy.start_up()
 
-        self.query_store = DFRayQueryStore.options(
-            name="DFRayQueryStore", get_if_exists=True
+        self.proxy_meta = DFRayProxyMeta.options(
+            name="DFRayProxyMeta", get_if_exists=True
         ).remote()
 
         self.ctx = DFRayContext(
@@ -640,11 +650,19 @@ class DFRayProxy:
     def prepare_query(self, query: str) -> str:
         query_id = new_friendly_name()
 
+        # we want to find out our list of tables before making the query
+        # as it can change as its held in the DFRayProxyMeta named Actor
+        # we are breaking an abstraction here so should refactor at some point
+        self.ctx.ctx = DFRayContextInternal()
+        for table, path in self.proxy_meta.get_tables.remote().items():
+            log.debug(f"registering table {table} -> {path}")
+            self.ctx.register_listing_table(table, path)
+
         df = self.ctx.sql(query)
         df.prepare()
         log.debug(f"got last stage schema: {df.last_stage_schema}")
 
-        self.query_store.store.remote(
+        self.proxy_meta.store.remote(
             QueryMeta(
                 query_id,
                 df.last_stage_id,
@@ -657,7 +675,7 @@ class DFRayProxy:
         return query_id
 
     def get_query_meta(self, query_id: str):
-        return ray.get(self.query_store.retrieve.remote(query_id))
+        return ray.get(self.proxy_meta.retrieve.remote(query_id))
 
     def __del__(self):
         print("cleaning up")

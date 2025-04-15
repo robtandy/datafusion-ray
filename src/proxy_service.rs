@@ -71,25 +71,11 @@ type Addrs = HashMap<usize, HashMap<usize, Vec<String>>>;
 
 struct DFRayProxyHandler {
     py_inner: PyObject,
-    pub queries: RwLock<HashMap<String, (usize, Schema, Addrs, usize)>>,
 }
 
 impl DFRayProxyHandler {
     pub fn new(py_inner: PyObject) -> Self {
-        let queries = RwLock::new(HashMap::new());
-        Self { py_inner, queries }
-    }
-    pub fn store(
-        &self,
-        query_id: String,
-        last_stage_id: usize,
-        schema: Schema,
-        addrs: Addrs,
-        partitions: usize,
-    ) {
-        self.queries
-            .write()
-            .insert(query_id, (last_stage_id, schema, addrs, partitions));
+        Self { py_inner }
     }
 
     pub fn get_query_meta(
