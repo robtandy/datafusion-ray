@@ -24,7 +24,7 @@ use arrow::array::RecordBatch;
 use arrow_flight::FlightClient;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::{HashSet, internal_datafusion_err};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -37,7 +37,7 @@ use tokio::net::TcpListener;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, async_trait};
 
-use datafusion::error::Result as DFResult;
+use datafusion::error::{DataFusionError, Result as DFResult};
 
 use arrow_flight::{Ticket, flight_service_server::FlightServiceServer};
 
@@ -50,6 +50,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use crate::flight::{FlightHandler, FlightServ};
 use crate::isolator::PartitionGroup;
 use crate::protobuf::FlightTicketData;
+use crate::stage_reader::QueryId;
 use crate::util::{
     ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, get_client_map,
     input_stage_ids, make_client, register_object_store_for_paths_in_plan, reporting_stream,
@@ -61,55 +62,72 @@ use crate::util::{
 /// will consume the partition from all clients and merge the results.
 pub(crate) struct ServiceClients(pub HashMap<(usize, usize), Mutex<Vec<FlightClient>>>);
 
+#[derive(Eq, PartialEq, Hash, Clone, Debug)]
+struct PlanKey {
+    query_id: String,
+    stage_id: usize,
+    partition: usize,
+}
+
 /// DFRayProcessorHandler is a [`FlightHandler`] that serves streams of partitions from a hosted Physical Plan
 /// It only responds to the DoGet Arrow Flight method.
 struct DFRayProcessorHandler {
     /// our name, useful for logging
     name: String,
-    /// Inner state of the handler
-    inner: RwLock<Option<DFRayProcessorHandlerInner>>,
-}
-
-struct DFRayProcessorHandlerInner {
-    /// the physical plan that comprises our stage
-    pub(crate) plan: Arc<dyn ExecutionPlan>,
-    /// the session context we will use to execute the plan
-    pub(crate) ctx: SessionContext,
+    /// our map of query_id -> (session ctx, execution plan)
+    plans: RwLock<HashMap<PlanKey, (SessionContext, Arc<dyn ExecutionPlan>)>>,
 }
 
 impl DFRayProcessorHandler {
     pub fn new(name: String) -> Self {
-        let inner = RwLock::new(None);
+        let plans = RwLock::new(HashMap::new());
 
-        Self { name, inner }
+        Self { name, plans }
     }
-    async fn update_plan(
+
+    pub async fn add_plan(
         &self,
+        query_id: String,
         stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
         plan: Arc<dyn ExecutionPlan>,
         partition_group: Vec<usize>,
     ) -> DFResult<()> {
-        let inner =
-            DFRayProcessorHandlerInner::new(stage_id, stage_addrs, plan, partition_group).await?;
-        self.inner.write().replace(inner);
+        let futs = partition_group.iter().map(|partition| {
+            let stage_addrs = stage_addrs.clone();
+            let query_id = query_id.clone();
+            let plan = plan.clone();
+            let partition_group = partition_group.clone();
+
+            async move {
+                let ctx = self
+                    .configure_ctx(
+                        query_id.clone(),
+                        stage_id,
+                        stage_addrs,
+                        plan.clone(),
+                        partition_group,
+                    )
+                    .await?;
+
+                let key = PlanKey {
+                    query_id: query_id.clone(),
+                    stage_id,
+                    partition: *partition,
+                };
+                self.plans.write().insert(key, (ctx, plan));
+                Ok::<_, DataFusionError>(())
+            }
+        });
+        futures::future::try_join_all(futs).await?;
+
+        info!("{} plans held {}", self.name, self.plans.read().len());
         Ok(())
-    }
-}
-
-impl DFRayProcessorHandlerInner {
-    pub async fn new(
-        stage_id: usize,
-        stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
-        plan: Arc<dyn ExecutionPlan>,
-        partition_group: Vec<usize>,
-    ) -> DFResult<Self> {
-        let ctx = Self::configure_ctx(stage_id, stage_addrs, plan.clone(), partition_group).await?;
-
-        Ok(Self { plan, ctx })
     }
 
     async fn configure_ctx(
+        &self,
+        query_id: String,
         stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
         plan: Arc<dyn ExecutionPlan>,
@@ -119,7 +137,9 @@ impl DFRayProcessorHandlerInner {
 
         let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
 
-        let mut config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
+        let mut config = SessionConfig::new()
+            .with_extension(Arc::new(ServiceClients(client_map)))
+            .with_extension(Arc::new(QueryId(query_id)));
 
         // this only matters if the plan includes an PartitionIsolatorExec, which looks for this
         // for this extension and will be ignored otherwise
@@ -137,28 +157,46 @@ impl DFRayProcessorHandlerInner {
 
         Ok(ctx)
     }
-}
 
-fn make_stream(
-    inner: &DFRayProcessorHandlerInner,
-    partition: usize,
-) -> Result<impl Stream<Item = Result<RecordBatch, FlightError>> + Send + 'static, Status> {
-    let task_ctx = inner.ctx.task_ctx();
+    fn make_stream(
+        &self,
+        query_id: &str,
+        stage_id: usize,
+        partition: usize,
+    ) -> Result<impl Stream<Item = Result<RecordBatch, FlightError>> + Send + 'static, Status> {
+        let key = PlanKey {
+            query_id: query_id.to_string(),
+            stage_id,
+            partition,
+        };
 
-    let stream = inner
-        .plan
-        .execute(partition, task_ctx)
-        .inspect_err(|e| {
-            error!(
-                "{}",
-                format!("Could not get partition stream from plan {e}")
-            )
-        })
-        .map(|s| reporting_stream("streamy", s))
-        .map_err(|e| Status::internal(format!("Could not get partition stream from plan {e}")))?
-        .map_err(|e| FlightError::from_external_error(Box::new(e)));
+        let (ctx, plan) = self.plans.read().get(&key).cloned().ok_or_else(|| {
+            Status::internal(format!(
+                "{}, No plan found for plan key {:?}",
+                self.name, key
+            ))
+        })?;
 
-    Ok(stream)
+        let task_ctx = ctx.task_ctx();
+
+        let stream = plan
+            .execute(partition, task_ctx)
+            .inspect_err(|e| {
+                error!(
+                    "{}",
+                    format!("Could not get partition stream from plan {e}")
+                )
+            })
+            .map(|s| reporting_stream("streamy", s))
+            .map_err(|e| Status::internal(format!("Could not get partition stream from plan {e}")))?
+            .map_err(|e| FlightError::from_external_error(Box::new(e)));
+
+        self.plans.write().remove(&key);
+
+        info!("{} plans held {}", self.name, self.plans.read().len());
+
+        Ok(stream)
+    }
 }
 
 #[async_trait]
@@ -182,17 +220,16 @@ impl FlightHandler for DFRayProcessorHandler {
         })?;
 
         trace!(
-            "{}, request for partition {} from {}",
-            self.name, ftd.partition, remote_addr
+            "{}, request for query: {} stage: {} partition: {} from: {}",
+            self.name, ftd.query_id, ftd.stage_id, ftd.partition, remote_addr
         );
 
         let name = self.name.clone();
         let stream = self
-            .inner
-            .read()
-            .as_ref()
-            .map(|inner| make_stream(inner, ftd.partition as usize))
-            .ok_or_else(|| Status::internal(format!("{} No inner found", &name)))??;
+            .make_stream(&ftd.query_id, ftd.stage_id as usize, ftd.partition as usize)
+            .map_err(|e| {
+                Status::internal(format!("{} Unexpected error making stream {e}", name))
+            })?;
 
         let out_stream = FlightDataEncoderBuilder::new()
             .build(stream)
@@ -284,13 +321,13 @@ impl DFRayProcessorService {
         pyo3_async_runtimes::tokio::future_into_py(py, fut)
     }
 
-    /// replace the plan that this service was providing, we will do this when we want
-    /// to reuse the DFRayProcessorService for a subsequent query
+    /// tell this service to host another plan
     ///
     /// returns a python coroutine that should be awaited
-    pub fn update_plan<'a>(
+    pub fn add_plan<'a>(
         &self,
         py: Python<'a>,
+        query_id: String,
         stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
         partition_group: Vec<usize>,
@@ -298,7 +335,7 @@ impl DFRayProcessorService {
     ) -> PyResult<Bound<'a, PyAny>> {
         let plan = bytes_to_physical_plan(&SessionContext::new(), plan_bytes)?;
 
-        debug!(
+        trace!(
             "{} Received New Plan: Stage:{} my addr: {}, partition_group {:?}, stage_addrs:\n{:?}\nplan:\n{}",
             self.name,
             stage_id,
@@ -312,7 +349,13 @@ impl DFRayProcessorService {
         let name = self.name.clone();
         let fut = async move {
             handler
-                .update_plan(stage_id, stage_addrs, plan, partition_group.clone())
+                .add_plan(
+                    query_id,
+                    stage_id,
+                    stage_addrs,
+                    plan,
+                    partition_group.clone(),
+                )
                 .await
                 .to_py_err()?;
             info!(

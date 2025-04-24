@@ -81,11 +81,12 @@ impl DFRayProxyHandler {
     pub fn get_query_meta(
         &self,
         query_id: String,
+        remove: bool,
     ) -> Result<(usize, Schema, Addrs, usize), Status> {
         Python::with_gil(|py| {
             let bound = self.py_inner.bind(py);
             bound
-                .call_method1("get_query_meta", (query_id.clone(),))
+                .call_method1("get_query_meta", (query_id.clone(), remove))
                 .and_then(|meta| {
                     let last_stage_id = meta.getattr("last_stage_id")?.extract::<usize>()?;
                     let last_stage_schema =
@@ -111,7 +112,7 @@ impl FlightSqlHandler for DFRayProxyHandler {
     async fn get_flight_info_statement(
         &self,
         query: arrow_flight::sql::CommandStatementQuery,
-        request: Request<FlightDescriptor>,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let query_id = Python::with_gil(|py| {
             let bound = self.py_inner.bind(py);
@@ -121,8 +122,8 @@ impl FlightSqlHandler for DFRayProxyHandler {
         })
         .map_err(|e| Status::internal(format!("Could not prepare query {e}")))?;
 
-        let (last_stage_id, schema, addrs, partition_count) =
-            self.get_query_meta(query_id.clone())?;
+        let (last_stage_id, schema, addrs, _partition_count) =
+            self.get_query_meta(query_id.clone(), false)?;
 
         debug!(
             "get flight info: query id {}, last_stage_id {}, addrs {:?}, schema:{}",
@@ -136,20 +137,18 @@ impl FlightSqlHandler for DFRayProxyHandler {
             .try_with_schema(&schema)
             .map_err(|e| Status::internal(format!("Could not create flight info {e}")))?;
 
-        for (partition, partition_addrs) in addrs.get(&last_stage_id).unwrap() {
-            let endpoint = FlightEndpoint::new().with_ticket(Ticket::new(
-                TicketStatementQuery {
-                    statement_handle: TicketStatementData {
-                        query_id: query_id.clone(),
-                    }
-                    .encode_to_vec()
-                    .into(),
+        let endpoint = FlightEndpoint::new().with_ticket(Ticket::new(
+            TicketStatementQuery {
+                statement_handle: TicketStatementData {
+                    query_id: query_id.clone(),
                 }
-                .as_any()
-                .encode_to_vec(),
-            ));
-            fi = fi.with_endpoint(endpoint);
-        }
+                .encode_to_vec()
+                .into(),
+            }
+            .as_any()
+            .encode_to_vec(),
+        ));
+        fi = fi.with_endpoint(endpoint);
 
         Ok(Response::new(fi))
     }
@@ -169,7 +168,7 @@ impl FlightSqlHandler for DFRayProxyHandler {
             .map_err(|e| Status::internal(format!("Cannot parse statement handle {e}")))?;
 
         let (last_stage_id, schema, addrs, partition_count) =
-            self.get_query_meta(tsd.query_id.clone())?;
+            self.get_query_meta(tsd.query_id.clone(), true)?;
 
         trace!("retrieved schema");
 
@@ -184,7 +183,7 @@ impl FlightSqlHandler for DFRayProxyHandler {
 
         trace!("request for query_id {} from {}", tsd.query_id, remote_addr);
 
-        let stream = stream_from_stage(0 as usize, addrs, plan)
+        let stream = stream_from_stage(&tsd.query_id, 0, addrs, plan)
             .await
             .map_err(|e| {
                 Status::internal(format!("Unexpected error building stream from stage {e}"))

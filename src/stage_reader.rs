@@ -19,6 +19,8 @@ use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
 use crate::util::{CombinedRecordBatchStream, reporting_stream};
 
+pub(crate) struct QueryId(pub String);
+
 /// An [`ExecutionPlan`] that will produce a stream of batches fetched from another stage
 /// which is hosted by a [`crate::stage_service::StageService`] separated from a network boundary
 ///
@@ -110,6 +112,12 @@ impl ExecutionPlan for DFRayStageReaderExec {
 
         trace!("{name} client_map keys {:?}", client_map.keys());
 
+        let query_id = &context
+            .session_config()
+            .get_extension::<QueryId>()
+            .ok_or(internal_datafusion_err!("{} QueryId not in context", name))?
+            .0;
+
         let clients = client_map
             .get(&(self.stage_id, partition))
             .ok_or(internal_datafusion_err!(
@@ -128,7 +136,7 @@ impl ExecutionPlan for DFRayStageReaderExec {
             .collect::<Vec<_>>();
 
         let ftd = FlightTicketData {
-            dummy: false,
+            query_id: query_id.clone(),
             stage_id: self.stage_id as u64,
             partition: partition as u64,
         };

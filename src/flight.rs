@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
+use log::error;
 use parking_lot::RwLock;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -52,7 +53,9 @@ impl FlightService for FlightServ {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        self.handler.get_stream(request).await
+        self.handler.get_stream(request).await.inspect_err(|e| {
+            error!("Error in do_get: {:?}", e);
+        })
     }
 
     async fn do_put(
@@ -149,13 +152,23 @@ impl FlightSqlService for FlightSqlServ {
         query: arrow_flight::sql::CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        self.handler.get_flight_info_statement(query, request).await
+        self.handler
+            .get_flight_info_statement(query, request)
+            .await
+            .inspect_err(|e| {
+                error!("Error in do_flight_info_statement: {:?}", e);
+            })
     }
     async fn do_get_statement(
         &self,
         ticket: arrow_flight::sql::TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.handler.do_get_statement(ticket, request).await
+        self.handler
+            .do_get_statement(ticket, request)
+            .await
+            .inspect_err(|e| {
+                error!("Error in do_get_statement: {:?}", e);
+            })
     }
 }

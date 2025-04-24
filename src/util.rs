@@ -52,7 +52,7 @@ use url::Url;
 use crate::codec::RayCodec;
 use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
-use crate::stage_reader::DFRayStageReaderExec;
+use crate::stage_reader::{DFRayStageReaderExec, QueryId};
 use prost::Message;
 use tokio::macros::support::thread_rng_n;
 
@@ -426,6 +426,7 @@ pub async fn get_client_map(
 }
 
 pub async fn stream_from_stage(
+    query_id: &str,
     partition: usize,
     stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     plan: Arc<dyn ExecutionPlan>,
@@ -434,7 +435,9 @@ pub async fn stream_from_stage(
     let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
 
     trace!("making session config");
-    let config = SessionConfig::new().with_extension(Arc::new(ServiceClients(client_map)));
+    let config = SessionConfig::new()
+        .with_extension(Arc::new(ServiceClients(client_map)))
+        .with_extension(Arc::new(QueryId(query_id.to_owned())));
 
     let state = SessionStateBuilder::new()
         .with_default_features()

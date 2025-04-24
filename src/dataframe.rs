@@ -261,13 +261,16 @@ impl DFRayDataFrame {
     fn read_final_stage(
         &mut self,
         py: Python,
+        query_id: &str,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
     ) -> PyResult<PyRecordBatchStream> {
         let plan = Arc::new(CoalescePartitionsExec::new(
             self.final_plan.clone().take().unwrap(),
         )) as Arc<dyn ExecutionPlan>;
 
-        let fut = async move || stream_from_stage(0, stage_addrs, plan).await;
+        let query_id = query_id.to_string();
+
+        let fut = async move || stream_from_stage(&query_id, 0, stage_addrs, plan).await;
 
         wait_for_future(py, fut())
             .map(PyRecordBatchStream::new)

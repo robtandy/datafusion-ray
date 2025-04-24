@@ -40,8 +40,8 @@ pub struct PartitionIsolatorExecNode {
 pub struct FlightTicketData {
     /// stage id of the stream
     /// parittion id of the stream
-    #[prost(bool, tag = "1")]
-    pub dummy: bool,
+    #[prost(string, tag = "1")]
+    pub query_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub stage_id: u64,
     #[prost(uint64, tag = "3")]

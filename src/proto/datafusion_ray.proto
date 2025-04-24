@@ -2,12 +2,12 @@ syntax = "proto3";
 
 package datafusion_ray.protobuf;
 
-option java_multiple_files = true;
-option java_package = "datafusion_ray.protobuf";
-option java_outer_classname = "RayDataFusionProto";
-
-import "datafusion_common.proto";
 import "datafusion.proto";
+import "datafusion_common.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "RayDataFusionProto";
+option java_package = "datafusion_ray.protobuf";
 
 message DFRayStageReaderExecNode {
   // schema of the stage we will consume
@@ -35,7 +35,7 @@ message PrefetchExecNode {
 
 message PartitionIsolatorExecNode {
   float dummy = 1;
-  uint64 partition_count = 2;  
+  uint64 partition_count = 2;
 }
 
 // TODO: why, if FlightTicketData has  the uint64 field first can it also be decoded also
@@ -43,7 +43,7 @@ message PartitionIsolatorExecNode {
 message FlightTicketData {
   // stage id of the stream
   // parittion id of the stream
-  bool dummy = 1;
+  string query_id = 1;
   uint64 stage_id = 2;
   uint64 partition = 3;
 }
@@ -52,5 +52,3 @@ message TicketStatementData {
   // identity of the query we want to consume
   string query_id = 1;
 }
-
-
