@@ -25,8 +25,9 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl};
 use datafusion::datasource::physical_plan::{
-    ArrowExec, AvroExec, CsvExec, NdJsonExec, ParquetExec,
+    ArrowExec, AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
 };
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, SessionStateBuilder};
@@ -648,6 +649,11 @@ pub(crate) fn register_object_store_for_paths_in_plan(
             } else if let Some(node) = input.as_any().downcast_ref::<ArrowExec>() {
                 let url = &node.base_config().object_store_url;
                 maybe_register_object_store(ctx, url.as_ref())?
+            } else if let Some(node) = input.as_any().downcast_ref::<DataSourceExec>() {
+                if let Some(config) = node.data_source().as_any().downcast_ref::<FileScanConfig>() {
+                    let url = &config.object_store_url;
+                    maybe_register_object_store(ctx, url.as_ref())?
+                }
             }
         }
         Ok(Transformed::no(plan))
