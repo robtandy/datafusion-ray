@@ -286,6 +286,7 @@ class DFRayProcessor:
         stage_id: int,
         stage_addrs: dict[int, dict[int, list[str]]],
         partition_group: list[int],
+        full_partitions: bool,
         plan_bytes: bytes,
     ):
         await self.processor_service.add_plan(
@@ -293,6 +294,7 @@ class DFRayProcessor:
             stage_id,
             stage_addrs,
             partition_group,
+            full_partitions,
             plan_bytes,
         )
 
@@ -342,22 +344,29 @@ class DFRayContextSupervisor:
         )
         self.pool = DFRayProcessorPool(processor_pool_min, processor_pool_max)
 
-        # a lock which we will hold when we modify query_data
+        # a lock which we will hold when we modify internal state
         self.lock = asyncio.Lock()
 
         # a map of query_id to a map of stage_id to a map of stage_id to InternalStageData
         self.query_data: dict[str, list[InternalStageData]] = {}
 
+        # have we started the pool
+        self.started = False
+
         log.info("Created DFRayContextSupervisor")
 
     async def start(self):
-        await self.pool.start()
-        (
-            self.remote_processors,
-            self.remote_processor_keys,
-            self.remote_addrs,
-        ) = await self.pool.acquire(self.pool.min_processors)
-        log.info("DFRayContextSupervisor started")
+        async with self.lock:
+            if self.started:
+                return
+            else:
+                await self.pool.start()
+                (
+                    self.remote_processors,
+                    self.remote_processor_keys,
+                    self.remote_addrs,
+                ) = await self.pool.acquire(self.pool.min_processors)
+                log.info("DFRayContextSupervisor started")
 
     async def get_stage_addrs(
         self, query_id: str, stage_id: int
@@ -367,6 +376,7 @@ class DFRayContextSupervisor:
         async with self.lock:
             stages = self.query_data.get(query_id, {})
 
+        # TODO: this can be more efficient
         for sd in stages:
             if sd.stage_id == stage_id:
                 for part in sd.partition_group:
@@ -405,13 +415,14 @@ class DFRayContextSupervisor:
         refs = []
         # now tell the processors what they are doing for this query
         for isd in stages:
-            children_addrs = self._get_children_addrs(isd.child_stage_ids, stages)
+            children_addrs = self._get_stage_addrs(isd.child_stage_ids, stages)
             refs.append(
                 isd.remote_processor.add_plan.remote(
                     query_id,
                     isd.stage_id,
                     children_addrs,
                     isd.partition_group,
+                    isd.full_partitions,
                     isd.plan_bytes,
                 )
             )
@@ -422,17 +433,26 @@ class DFRayContextSupervisor:
         await wait_for(refs, "updating plans")
         return query_id
 
-    def _get_children_addrs(
-        self, child_stage_ids: list[int], stages: list[InternalStageData]
+    def _get_stage_addrs(
+        self, stage_ids: list[int], stages: list[InternalStageData]
     ) -> dict[int, dict[int, list[str]]]:
         """Get the addresses of the child stages for a given stage id."""
+        # TODO: this can be more efficient
         addrs = {}
-        for child_stage_id in child_stage_ids:
-            addrs[child_stage_id] = defaultdict(list)
+        for stage_id in stage_ids:
+            addrs[stage_id] = defaultdict(list)
             for sd in stages:
-                if sd.stage_id == child_stage_id:
+                if sd.stage_id == stage_id:
                     for part in sd.partition_group:
-                        addrs[child_stage_id][part].append(sd.remote_addr)
+                        if not sd.full_partitions:
+                            # we have to fan out to read this partition
+                            addrs[stage_id][part] = [
+                                s.remote_addr
+                                for s in stages
+                                if s.stage_id == sd.stage_id
+                            ]
+                        else:
+                            addrs[stage_id][part].append(sd.remote_addr)
         return addrs
 
     async def all_done(self):
@@ -587,6 +607,8 @@ class DFRayProxy:
         self.batch_size = batch_size
         self.partitions_per_processor = partitions_per_processor
         self.prefetch_buffer_size = prefetch_buffer_size
+        self.processor_pool_min = processor_pool_min
+        self.processor_pool_max = processor_pool_max
 
         # import this here so ray doesn't try to serialize the rust extension
         from datafusion_ray._datafusion_ray_internal import DFRayProxyService
@@ -600,39 +622,26 @@ class DFRayProxy:
             lifetime="detached",
         ).remote()
 
-        self.ctx = DFRayContext(
-            prefetch_buffer_size=prefetch_buffer_size,
-            partitions_per_processor=partitions_per_processor,
-            processor_pool_min=processor_pool_min,
-            processor_pool_max=processor_pool_max,
-        )
-
     def addr(self):
         return self.proxy.addr()
 
     async def serve(self):
         await self.proxy.serve()
 
-    def register_parquet(self, name: str, path: str):
-        self.ctx.register_parquet(name, path)
-
-    def register_csv(self, name: str, path: str):
-        self.ctx.register_csv(name, path)
-
-    def register_listing_table(self, name: str, path: str, file_extention="parquet"):
-        self.ctx.register_listing_table(name, path, file_extention)
-
     def prepare_query(self, query: str) -> str:
 
-        # we want to find out our list of tables before making the query
-        # as it can change as its held in the DFRayProxyMeta named Actor
-        # we are breaking an abstraction here so should refactor at some point
-        self.ctx.ctx = DFRayContextInternal()
+        ctx = DFRayContext(
+            prefetch_buffer_size=self.prefetch_buffer_size,
+            partitions_per_processor=self.partitions_per_processor,
+            processor_pool_min=self.processor_pool_min,
+            processor_pool_max=self.processor_pool_max,
+            detached_supervisor=True,
+        )
         for table, path in ray.get(self.proxy_meta.get_tables.remote()).items():
             log.debug(f"registering table {table} -> {path}")
-            self.ctx.register_listing_table(table, path)
+            ctx.register_listing_table(table, path)
 
-        df = self.ctx.sql(query)
+        df = ctx.sql(query)
         df.prepare()
 
         ref = self.proxy_meta.store.remote(
@@ -666,29 +675,33 @@ class DFRayContext:
         partitions_per_processor: int | None = None,
         processor_pool_min: int = 1,
         processor_pool_max: int = 100,
+        detached_supervisor: bool = False,
     ):
         self.ctx = DFRayContextInternal()
         self.batch_size = batch_size
         self.partitions_per_processor = partitions_per_processor
         self.prefetch_buffer_size = prefetch_buffer_size
+        self.detached_supervisor = detached_supervisor
 
-        self.supervisor = DFRayContextSupervisor.options(
-            name="RayContextSupersisor",
-            get_if_exists=True,
-            lifetime="detached",
-        ).remote(
-            processor_pool_min,
-            processor_pool_max,
-        )
+        if detached_supervisor:
+            self.supervisor = DFRayContextSupervisor.options(
+                name="RayContextSupersisor",
+                get_if_exists=True,
+                lifetime="detached",
+            ).remote(
+                processor_pool_min,
+                processor_pool_max,
+            )
+        else:
+            self.supervisor = DFRayContextSupervisor.options(
+                name="RayContextSupersisor",
+            ).remote(
+                processor_pool_min,
+                processor_pool_max,
+            )
 
-        # start up our super visor and don't check in on it until its
-        # time to query, then we will await this ref
         start_ref = self.supervisor.start.remote()
-
-        # ensure we are ready
-        s = time.time()
         call_sync(wait_for([start_ref], "RayContextSupervisor start"))
-        e = time.time()
 
     def register_parquet(self, name: str, path: str):
         """
@@ -743,6 +756,7 @@ class DFRayContext:
         self.ctx.register_listing_table(name, path, file_extention)
 
     def sql(self, query: str) -> DFRayDataFrame:
+
         df = self.ctx.sql(query)
 
         return DFRayDataFrame(
@@ -757,6 +771,7 @@ class DFRayContext:
         self.ctx.set(option, value)
 
     def __del__(self):
-        log.info("DFRayContext, cleaning up remote resources")
-        ref = self.supervisor.all_done.remote()
-        call_sync(wait_for([ref], "DFRayContextSupervisor all done"))
+        if not self.detached_supervisor:
+            log.info("DFRayContext, cleaning up remote resources")
+            ref = self.supervisor.all_done.remote()
+            call_sync(wait_for([ref], "DFRayContextSupervisor all done"))

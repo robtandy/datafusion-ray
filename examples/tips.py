@@ -17,13 +17,14 @@
 
 import argparse
 import os
+
 import ray
 
 from datafusion_ray import DFRayContext, df_ray_runtime_env
 
 
 def go(data_dir: str):
-    ctx = DFRayContext()
+    ctx = DFRayContext(partitions_per_processor=8)
 
     ctx.register_parquet("tips", os.path.join(data_dir, "tips.parquet"))
 
@@ -36,9 +37,7 @@ def go(data_dir: str):
 if __name__ == "__main__":
     ray.init(namespace="tips", runtime_env=df_ray_runtime_env)
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--data-dir", required=True, help="path to tips.parquet files"
-    )
+    parser.add_argument("--data-dir", required=True, help="path to tips.parquet files")
     args = parser.parse_args()
 
     go(args.data_dir)

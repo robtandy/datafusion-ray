@@ -5,11 +5,13 @@ use datafusion::{
     error::Result,
     execution::SendableRecordBatchStream,
     physical_plan::{
-        DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
-        PlanProperties,
+        DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan,
+        ExecutionPlanProperties, Partitioning, PlanProperties,
     },
 };
-use log::error;
+use log::{error, trace};
+
+use crate::{processor_service::CtxName, util::display_plan_with_partition_counts};
 
 pub struct PartitionGroup(pub Vec<usize>);
 
@@ -106,8 +108,34 @@ impl ExecutionPlan for PartitionIsolatorExec {
             ));
         }
 
+        let ctx_name = context
+            .session_config()
+            .get_extension::<CtxName>()
+            .ok_or_else(|| internal_datafusion_err!("CtxName not set in session config"))?
+            .0
+            .clone();
+
+        let partitions_in_input = self.input.output_partitioning().partition_count();
+
         let output_stream = match partition_group.get(partition) {
-            Some(actual_partition_number) => self.input.execute(*actual_partition_number, context),
+            Some(actual_partition_number) => {
+                trace!(
+                    "PartitionIsolatorExec::execute: {}, partition_group={:?}, requested partition={} actual={},\ninput partitions={}",
+                    ctx_name,
+                    partition_group,
+                    partition,
+                    *actual_partition_number,
+                    partitions_in_input
+                );
+                if *actual_partition_number >= partitions_in_input {
+                    trace!("{} returning empty stream", ctx_name);
+                    Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
+                        as SendableRecordBatchStream)
+                } else {
+                    trace!("{} returning actual stream", ctx_name);
+                    self.input.execute(*actual_partition_number, context)
+                }
+            }
             None => Ok(Box::pin(EmptyRecordBatchStream::new(self.input.schema()))
                 as SendableRecordBatchStream),
         };

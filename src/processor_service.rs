@@ -16,17 +16,16 @@
 // under the License.
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow_flight::FlightClient;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
-use datafusion::common::{HashSet, internal_datafusion_err};
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{Stream, TryStreamExt};
 use local_ip_address::local_ip;
@@ -51,16 +50,18 @@ use crate::flight::{FlightHandler, FlightServ};
 use crate::isolator::PartitionGroup;
 use crate::protobuf::FlightTicketData;
 use crate::stage_reader::QueryId;
+
 use crate::util::{
     ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, get_client_map,
-    input_stage_ids, make_client, register_object_store_for_paths_in_plan, reporting_stream,
-    wait_for_future,
+    input_stage_ids, register_object_store_for_paths_in_plan, reporting_stream, wait_for_future,
 };
 
 /// a map of stage_id, partition to a list FlightClients that can serve
 /// this (stage_id, and partition).   It is assumed that to consume a partition, the consumer
 /// will consume the partition from all clients and merge the results.
 pub(crate) struct ServiceClients(pub HashMap<(usize, usize), Mutex<Vec<FlightClient>>>);
+
+pub(crate) struct CtxName(pub String);
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct PlanKey {
@@ -69,13 +70,12 @@ struct PlanKey {
     partition: usize,
 }
 
-/// DFRayProcessorHandler is a [`FlightHandler`] that serves streams of partitions from a hosted Physical Plan
 /// It only responds to the DoGet Arrow Flight method.
 struct DFRayProcessorHandler {
     /// our name, useful for logging
     name: String,
     /// our map of query_id -> (session ctx, execution plan)
-    plans: RwLock<HashMap<PlanKey, (SessionContext, Arc<dyn ExecutionPlan>)>>,
+    plans: RwLock<HashMap<PlanKey, Vec<(SessionContext, Arc<dyn ExecutionPlan>)>>>,
 }
 
 impl DFRayProcessorHandler {
@@ -90,38 +90,50 @@ impl DFRayProcessorHandler {
         query_id: String,
         stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
-        plan: Arc<dyn ExecutionPlan>,
         partition_group: Vec<usize>,
+        full_partitions: bool,
+        plan: Arc<dyn ExecutionPlan>,
     ) -> DFResult<()> {
-        let futs = partition_group.iter().map(|partition| {
-            let stage_addrs = stage_addrs.clone();
-            let query_id = query_id.clone();
-            let plan = plan.clone();
-            let partition_group = partition_group.clone();
+        let partitions = if full_partitions {
+            partition_group.clone()
+        } else {
+            // we need to be able to respond to any of the partitions as
+            // they will be scatter gathering from all Processors hosting this stage
+            (0..(plan.output_partitioning().partition_count())).collect::<Vec<usize>>()
+        };
 
-            async move {
-                let ctx = self
-                    .configure_ctx(
-                        query_id.clone(),
-                        stage_id,
-                        stage_addrs,
-                        plan.clone(),
-                        partition_group,
-                    )
-                    .await?;
+        trace!(
+            "{} adding plan for stage {} partitions: {:?}",
+            self.name, stage_id, partitions
+        );
 
-                let key = PlanKey {
-                    query_id: query_id.clone(),
-                    stage_id,
-                    partition: *partition,
-                };
-                self.plans.write().insert(key, (ctx, plan));
-                Ok::<_, DataFusionError>(())
+        let ctx = self
+            .configure_ctx(
+                query_id.clone(),
+                stage_id,
+                stage_addrs,
+                plan.clone(),
+                partition_group,
+            )
+            .await?;
+
+        for partition in partitions.iter() {
+            let key = PlanKey {
+                query_id: query_id.clone(),
+                stage_id,
+                partition: *partition,
+            };
+            {
+                let mut _guard = self.plans.write();
+                if let Some(plan_vec) = _guard.get_mut(&key) {
+                    plan_vec.push((ctx.clone(), plan.clone()));
+                } else {
+                    _guard.insert(key, vec![(ctx.clone(), plan.clone())]);
+                }
             }
-        });
-        futures::future::try_join_all(futs).await?;
+        }
 
-        info!("{} plans held {}", self.name, self.plans.read().len());
+        debug!("{} plans held {:?}", self.name, self.plans.read().len());
         Ok(())
     }
 
@@ -137,9 +149,15 @@ impl DFRayProcessorHandler {
 
         let client_map = get_client_map(stage_ids_i_need, stage_addrs).await?;
 
+        let ctx_name = format!(
+            "{} stage: {} partition_group: {:?}",
+            self.name, stage_id, partition_group
+        );
+
         let mut config = SessionConfig::new()
             .with_extension(Arc::new(ServiceClients(client_map)))
-            .with_extension(Arc::new(QueryId(query_id)));
+            .with_extension(Arc::new(QueryId(query_id)))
+            .with_extension(Arc::new(CtxName(ctx_name)));
 
         // this only matters if the plan includes an PartitionIsolatorExec, which looks for this
         // for this extension and will be ignored otherwise
@@ -170,14 +188,31 @@ impl DFRayProcessorHandler {
             partition,
         };
 
-        let (ctx, plan) = self.plans.read().get(&key).cloned().ok_or_else(|| {
-            Status::internal(format!(
-                "{}, No plan found for plan key {:?}",
-                self.name, key
-            ))
-        })?;
+        let (ctx, plan) = {
+            let mut _guard = self.plans.write();
+            let (plan_key, mut plan_vec) = _guard.remove_entry(&key).ok_or_else(|| {
+                Status::internal(format!(
+                    "{}, No plan found for plan key {:?}",
+                    self.name, key
+                ))
+            })?;
+            let (ctx, plan) = plan_vec.pop().expect("plan_vec should not be empty");
+            if !plan_vec.is_empty() {
+                _guard.insert(plan_key, plan_vec);
+            }
+            (ctx, plan)
+        };
 
         let task_ctx = ctx.task_ctx();
+
+        let ctx_name = task_ctx
+            .session_config()
+            .get_extension::<CtxName>()
+            .ok_or_else(|| {
+                Status::internal(format!("{}, CtxName not set in session config", self.name))
+            })?
+            .0
+            .clone();
 
         let stream = plan
             .execute(partition, task_ctx)
@@ -187,11 +222,9 @@ impl DFRayProcessorHandler {
                     format!("Could not get partition stream from plan {e}")
                 )
             })
-            .map(|s| reporting_stream("streamy", s))
+            .map(|s| reporting_stream(&format!("{ctx_name} s:{stage_id} p:{partition}"), s))
             .map_err(|e| Status::internal(format!("Could not get partition stream from plan {e}")))?
             .map_err(|e| FlightError::from_external_error(Box::new(e)));
-
-        self.plans.write().remove(&key);
 
         info!("{} plans held {}", self.name, self.plans.read().len());
 
@@ -331,16 +364,18 @@ impl DFRayProcessorService {
         stage_id: usize,
         stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
         partition_group: Vec<usize>,
+        full_partitions: bool,
         plan_bytes: &[u8],
     ) -> PyResult<Bound<'a, PyAny>> {
         let plan = bytes_to_physical_plan(&SessionContext::new(), plan_bytes)?;
 
         trace!(
-            "{} Received New Plan: Stage:{} my addr: {}, partition_group {:?}, stage_addrs:\n{:?}\nplan:\n{}",
+            "{} Received New Plan: Stage:{} my addr: {}, partition_group {:?}, full:{}, stage_addrs:\n{:?}\nplan:\n{}",
             self.name,
             stage_id,
             self.addr()?,
             partition_group,
+            full_partitions,
             stage_addrs,
             display_plan_with_partition_counts(&plan)
         );
@@ -353,8 +388,9 @@ impl DFRayProcessorService {
                     query_id,
                     stage_id,
                     stage_addrs,
-                    plan,
                     partition_group.clone(),
+                    full_partitions,
+                    plan,
                 )
                 .await
                 .to_py_err()?;

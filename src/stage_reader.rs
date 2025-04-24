@@ -17,7 +17,7 @@ use prost::Message;
 
 use crate::processor_service::ServiceClients;
 use crate::protobuf::FlightTicketData;
-use crate::util::{CombinedRecordBatchStream, reporting_stream};
+use crate::util::CombinedRecordBatchStream;
 
 pub(crate) struct QueryId(pub String);
 
@@ -100,7 +100,6 @@ impl ExecutionPlan for DFRayStageReaderExec {
         context: std::sync::Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let name = format!("RayStageReaderExec[{}-{}]:", self.stage_id, partition);
-        trace!("{name} execute");
         let client_map = &context
             .session_config()
             .get_extension::<ServiceClients>()
@@ -109,8 +108,6 @@ impl ExecutionPlan for DFRayStageReaderExec {
             ))?
             .clone()
             .0;
-
-        trace!("{name} client_map keys {:?}", client_map.keys());
 
         let query_id = &context
             .session_config()
@@ -135,6 +132,11 @@ impl ExecutionPlan for DFRayStageReaderExec {
             })
             .collect::<Vec<_>>();
 
+        trace!(
+            "{name} execute: partition {partition} num clients: {}",
+            clients.len()
+        );
+
         let ftd = FlightTicketData {
             query_id: query_id.clone(),
             stage_id: self.stage_id as u64,
@@ -147,17 +149,18 @@ impl ExecutionPlan for DFRayStageReaderExec {
 
         let schema = self.schema.clone();
 
+        let num_clients = clients.len();
+
         let stream = async_stream::stream! {
             let mut error = false;
 
             let mut streams = vec![];
             for (i, mut client) in clients.into_iter().enumerate() {
                 let name = name.clone();
-                trace!("{name} Getting flight stream" );
+                trace!("{name} Getting flight stream {}/{}",i+1, num_clients);
                 match client.do_get(ticket.clone()).await {
                     Ok(flight_stream) => {
                         trace!("{name} Got flight stream. headers:{:?}", flight_stream.headers());
-                        let name_clone = name.clone();
                         let rbr_stream = RecordBatchStreamAdapter::new(schema.clone(),
                             flight_stream
                                 .map_err(move |e| internal_datafusion_err!("{} Error consuming flight stream: {}", name, e)));

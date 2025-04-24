@@ -164,7 +164,7 @@ DataFusion and DataFusion for Ray currently choose the first approach, but there
 
 ## Query Stages
 
-The first two query stages to be executed will read the `customer` and `order` parquet files and reparition them by the join keys `c_custkey` and `o_custkey`.
+The first two query stages to be executed will read the `customer` and `order` parquet files and repartition them by the join keys `c_custkey` and `o_custkey`.
 
 ```text
 Query Stage #0:

@@ -292,7 +292,7 @@ fn build_replacement(
     assert!(children.len() == 1, "Unexpected plan structure");
 
     let child = children[0];
-    let partition_count = child.output_partitioning().partition_count();
+    let partition_count = plan.output_partitioning().partition_count();
     trace!(
         "build_replacement for {}, partition_count: {}",
         displayable(plan.as_ref()).one_line(),

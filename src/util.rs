@@ -349,11 +349,11 @@ pub fn reporting_stream(
     let name = name.to_owned();
 
     let out_stream = async_stream::stream! {
-        debug!("stream:{name}: attempting to read");
+        trace!("stream:{name}: attempting to read");
         while let Some(batch) = stream.next().await {
             match batch {
-                Ok(ref b) => debug!("stream:{name}: got batch of {} rows", b.num_rows()),
-                Err(ref e) => debug!("stream:{name}: got error {e}"),
+                Ok(ref b) => trace!("stream:{name}: got batch of {} rows", b.num_rows()),
+                Err(ref e) => trace!("stream:{name}: got error {e}"),
             };
             yield batch;
         };
@@ -404,7 +404,7 @@ pub async fn get_client_map(
             "Cannot find stage addr {stage_id} in {:?}",
             stage_addrs
         ))?;
-        debug!(">collect_from_stage: stage {stage_id}: partiton_addrs: {partition_addrs:?}");
+        debug!(">collect_from_stage: stage {stage_id}: partition_addrs: {partition_addrs:?}");
 
         for (partition, addrs) in partition_addrs {
             let mut flight_clients = vec![];

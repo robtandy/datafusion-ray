@@ -39,7 +39,7 @@ pub struct PartitionIsolatorExecNode {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FlightTicketData {
     /// stage id of the stream
-    /// parittion id of the stream
+    /// partition id of the stream
     #[prost(string, tag = "1")]
     pub query_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]

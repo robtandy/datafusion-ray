@@ -42,7 +42,7 @@ message PartitionIsolatorExecNode {
 // MaxRowsExecNode?  There is something I don't understand here
 message FlightTicketData {
   // stage id of the stream
-  // parittion id of the stream
+  // partition id of the stream
   string query_id = 1;
   uint64 stage_id = 2;
   uint64 partition = 3;
