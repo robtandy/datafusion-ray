@@ -78,18 +78,19 @@ where
 }
 
 struct Spawner {
-    runtime: Arc<Runtime>,
+    //    runtime: Arc<Runtime>,
 }
 
 impl Spawner {
     fn new() -> Self {
-        let runtime = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("can build runtime"),
-        );
-        Self { runtime }
+        // let runtime = Arc::new(
+        //     tokio::runtime::Builder::new_multi_thread()
+        //         .enable_all()
+        //         .build()
+        //         .expect("can build runtime"),
+        // );
+        // Self { runtime }
+        Self {}
     }
 
     fn wait_for<F>(&self, f: F) -> PyResult<F::Output>
@@ -99,12 +100,13 @@ impl Spawner {
     {
         let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
         let fut = async move { tx.send(f.await) };
-        //let runtime = pyo3_async_runtimes::tokio::get_runtime();
-        let _guard = self.runtime.enter();
+        //let _guard = self.runtime.enter();
+        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
 
         tokio::spawn(fut);
 
-        let out = std::thread::spawn(move || rx.recv()).join().to_py_err()?;
+        //let out = std::thread::spawn(move || rx.recv()).join().to_py_err()?;
+        let out = rx.recv();
         out.to_py_err()
     }
 }
@@ -376,12 +378,17 @@ impl FlightClientFactory {
         // of a channel.   Could this be the issue?
         //
         // TODO: figure out why this doesn't work
+        //
+        // UPDATE: This is repeatable for tpc
+        // RAY_DEDUP_LOGS=0 DATAFUSION_RAY_LOG_LEVEL=trace python tpch/tpcbench.py --data /path/to/data --concurrency 3 --partitions-per-processor=2 --processor-pool-min 1 --validate
+        // but goes away for when there are higher number of processors, even 2.
+        // I'm going to leave in the functionality for cached channels for now
 
         let url = format!("http://{addr}");
-        // if let Some(fsclient) = self.channels.read().get(addr).cloned() {
-        //     trace!("FlightClientFactory using cached channel for {addr}");
-        //     return Ok(FlightClient::new_from_inner(fsclient));
-        // }
+        if let Some(fsclient) = self.channels.read().get(addr).cloned() {
+            trace!("FlightClientFactory using cached channel for {addr}");
+            return Ok(FlightClient::new_from_inner(fsclient));
+        }
         debug!("FlightClientFactory making channel for {addr}");
 
         let chan = Channel::from_shared(url.clone())
