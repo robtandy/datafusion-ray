@@ -39,7 +39,7 @@ fn main() -> Result<(), String> {
         tonic_build::configure()
             .extern_path(".datafusion", "::datafusion_proto::protobuf")
             .extern_path(".datafusion_common", "::datafusion_proto::protobuf")
-            .compile(&["src/proto/datafusion_ray.proto"], &["src/proto"])
+            .compile_protos(&["src/proto/datafusion_ray.proto"], &["src/proto"])
             .map_err(|e| format!("protobuf compilation failed: {e}"))?;
         let generated_source_path = out.join("datafusion_ray.protobuf.rs");
         let code = std::fs::read_to_string(generated_source_path).unwrap();

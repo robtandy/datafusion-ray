@@ -32,9 +32,6 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::DataFrame;
-use datafusion_python::errors::PyDataFusionError;
-use datafusion_python::physical_plan::PyExecutionPlan;
-use datafusion_python::sql::logical::PyLogicalPlan;
 use futures::stream::StreamExt;
 use itertools::Itertools;
 use log::debug;
@@ -221,27 +218,27 @@ impl DFRayDataFrame {
         Ok(stages)
     }
 
-    fn execution_plan(&self, py: Python) -> PyResult<PyExecutionPlan> {
-        let plan = wait_for_future(py, self.df.clone().create_physical_plan())?;
-        Ok(PyExecutionPlan::new(plan))
-    }
+    //fn execution_plan(&self, py: Python) -> PyResult<PyExecutionPlan> {
+    //    let plan = wait_for_future(py, self.df.clone().create_physical_plan())?;
+    //    Ok(PyExecutionPlan::new(plan))
+    //}
 
     fn display_execution_plan(&self, py: Python) -> PyResult<String> {
         let plan = wait_for_future(py, self.df.clone().create_physical_plan())?;
         Ok(display_plan_with_partition_counts(&plan).to_string())
     }
 
-    fn logical_plan(&self) -> PyResult<PyLogicalPlan> {
-        Ok(PyLogicalPlan::new(self.df.logical_plan().clone()))
-    }
+    //fn logical_plan(&self) -> PyResult<PyLogicalPlan> {
+    //    Ok(PyLogicalPlan::new(self.df.logical_plan().clone()))
+    // }
 
     fn schema(&self, py: Python) -> PyResult<PyObject> {
         self.df.schema().as_arrow().to_pyarrow(py)
     }
 
-    fn optimized_logical_plan(&self) -> PyResult<PyLogicalPlan> {
-        Ok(PyLogicalPlan::new(self.df.clone().into_optimized_plan()?))
-    }
+    //fn optimized_logical_plan(&self) -> PyResult<PyLogicalPlan> {
+    //    Ok(PyLogicalPlan::new(self.df.clone().into_optimized_plan()?))
+    //}
 
     fn final_schema(&self, py: Python) -> PyResult<Option<PyObject>> {
         self.final_plan
@@ -399,9 +396,9 @@ impl PyDFRayStage {
         Ok(result)
     }
 
-    pub fn execution_plan(&self) -> PyExecutionPlan {
-        PyExecutionPlan::new(self.plan.clone())
-    }
+    // pub fn execution_plan(&self) -> PyExecutionPlan {
+    //     PyExecutionPlan::new(self.plan.clone())
+    // }
 
     fn display_execution_plan(&self) -> PyResult<String> {
         Ok(display_plan_with_partition_counts(&self.plan).to_string())
@@ -488,7 +485,7 @@ async fn next_stream(
         }
         Some(Err(e)) => {
             debug!("pyrecordbatchstream got error {}", e);
-            Err(PyDataFusionError::from(e))?
+            Err(internal_datafusion_err!("Error in stream: {}", e)).to_py_err()
         }
         None => {
             debug!("pyrecordbatchstream got none");

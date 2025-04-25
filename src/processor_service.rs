@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -36,7 +35,7 @@ use tokio::net::TcpListener;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, async_trait};
 
-use datafusion::error::{DataFusionError, Result as DFResult};
+use datafusion::error::Result as DFResult;
 
 use arrow_flight::{Ticket, flight_service_server::FlightServiceServer};
 
@@ -128,8 +127,9 @@ impl DFRayProcessorHandler {
                 if let Some(plan_vec) = _guard.get_mut(&key) {
                     plan_vec.push((ctx.clone(), plan.clone()));
                 } else {
-                    _guard.insert(key, vec![(ctx.clone(), plan.clone())]);
+                    _guard.insert(key.clone(), vec![(ctx.clone(), plan.clone())]);
                 }
+                trace!("{} added plan for plan key {:?}", self.name, key);
             }
         }
 
@@ -196,6 +196,14 @@ impl DFRayProcessorHandler {
                     self.name, key
                 ))
             })?;
+            trace!(
+                "{} found {} plans for plan key {:?}",
+                self.name,
+                plan_vec.len(),
+                plan_key
+            );
+            //trace!("{} removed plan for plan key {:?}", self.name, plan_key);
+            //let (ctx, plan) = plan_vec.pop().expect("plan_vec should not be empty");
             let (ctx, plan) = plan_vec.pop().expect("plan_vec should not be empty");
             if !plan_vec.is_empty() {
                 _guard.insert(plan_key, plan_vec);
@@ -252,9 +260,15 @@ impl FlightHandler for DFRayProcessorHandler {
             ))
         })?;
 
+        let plan_key = PlanKey {
+            query_id: ftd.query_id.clone(),
+            stage_id: ftd.stage_id as usize,
+            partition: ftd.partition as usize,
+        };
+
         trace!(
-            "{}, request for query: {} stage: {} partition: {} from: {}",
-            self.name, ftd.query_id, ftd.stage_id, ftd.partition, remote_addr
+            "{}, request for plan_key:{:?} from: {}",
+            self.name, plan_key, remote_addr
         );
 
         let name = self.name.clone();
@@ -417,11 +431,11 @@ impl DFRayProcessorService {
             info!("received shutdown signal");
         };
 
-        let service = FlightServ {
+        let flight_serv = FlightServ {
             handler: self.handler.clone(),
         };
 
-        let svc = FlightServiceServer::new(service);
+        let svc = FlightServiceServer::new(flight_serv);
 
         let listener = self.listener.take().unwrap();
         let name = self.name.clone();

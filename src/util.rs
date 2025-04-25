@@ -18,6 +18,7 @@ use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use arrow::ipc::{MetadataVersion, root_as_message};
 use arrow::pyarrow::*;
 use arrow::util::pretty;
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::{FlightClient, FlightData, Ticket};
 use async_stream::stream;
 use datafusion::common::internal_datafusion_err;
@@ -43,7 +44,7 @@ use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::http::HttpBuilder;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 use tokio::runtime::{self, Runtime};
@@ -96,34 +97,19 @@ impl Spawner {
         F: Future + Send + 'static,
         F::Output: Send,
     {
-        //let runtime = self.runtime.clone();
-
         let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
         let fut = async move { tx.send(f.await) };
+        //let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let _guard = self.runtime.enter();
 
         tokio::spawn(fut);
 
         let out = std::thread::spawn(move || rx.recv()).join().to_py_err()?;
         out.to_py_err()
-
-        /*std::thread::scope(|s| {
-            debug!("spawning thread in scope");
-            let out = s
-                .spawn(move || {
-                    debug!("blocking on func");
-                    let out = runtime.run(f);
-                    debug!("done blocking on func");
-                    out
-                })
-                .join()
-                .to_py_err();
-            debug!("done spawning thread in scope");
-            out
-        })*/
     }
 }
 
+static SPAWNER: OnceLock<Spawner> = OnceLock::new();
 pub fn wait_for_future<F, T, E>(py: Python, f: F) -> PyResult<T>
 where
     F: Future<Output = Result<T, E>> + Send + 'static,
@@ -131,13 +117,11 @@ where
     E: std::fmt::Debug,
 {
     //return datafusion_python::utils::wait_for_future(py, f).to_py_err();
-    static SPAWNER: OnceLock<Spawner> = OnceLock::new();
     let spawner = SPAWNER.get_or_init(Spawner::new);
-    //let spawner = Spawner::new();
 
-    debug!("waiting for func");
+    trace!("waiting for func");
     let out = py.allow_threads(|| spawner.wait_for(f))?;
-    debug!("done waiting for func");
+    trace!("done waiting for func");
     out.to_py_err()
 }
 
@@ -272,21 +256,6 @@ pub fn prettify(batches: Bound<'_, PyList>) -> PyResult<String> {
         .to_py_err()
 }
 
-pub async fn make_client(exchange_addr: &str) -> Result<FlightClient, DataFusionError> {
-    let url = format!("http://{exchange_addr}");
-    trace!("making client for {url}");
-
-    let chan = Channel::from_shared(url.clone())
-        .map_err(|e| internal_datafusion_err!("Cannot create channel from url {url}: {e}"))?;
-    let channel = chan
-        .connect()
-        .await
-        .map_err(|e| internal_datafusion_err!("Cannot connect to channel {e}"))?;
-    let flight_client = FlightClient::new(channel);
-    trace!("done making client for {url}");
-    Ok(flight_client)
-}
-
 pub fn input_stage_ids(plan: &Arc<dyn ExecutionPlan>) -> Result<Vec<usize>, DataFusionError> {
     let mut result = vec![];
     plan.clone()
@@ -381,43 +350,76 @@ pub fn fix_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>, 
         .data)
 }
 
+struct FlightClientFactory {
+    channels: RwLock<HashMap<String, FlightServiceClient<Channel>>>,
+}
+
+impl FlightClientFactory {
+    fn new() -> Self {
+        Self {
+            channels: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn get_client(&self, addr: &str) -> Result<FlightClient, DataFusionError> {
+        // ideally we want to reuse channels as Tonic encourages cloning them when
+        // you can.   This could would allow us to lazily create channels and keep
+        // them around so that on subsequent requests to the same address, we won't
+        // incur the penalty of establishing a socket connection.
+        //
+        // However this doesn't work at the moment.  We encounter
+        // hangs or deadlock I cant tell which.  Its not due to the lock, as far
+        // as I can tell, but rather something about the cloned channels themselves.
+        //
+        // In the case where we use a single DFProcessor, all connections will be to
+        // the same host, and from itself, to itself, so we'll have 100s of clones
+        // of a channel.   Could this be the issue?
+        //
+        // TODO: figure out why this doesn't work
+
+        let url = format!("http://{addr}");
+        // if let Some(fsclient) = self.channels.read().get(addr).cloned() {
+        //     trace!("FlightClientFactory using cached channel for {addr}");
+        //     return Ok(FlightClient::new_from_inner(fsclient));
+        // }
+        debug!("FlightClientFactory making channel for {addr}");
+
+        let chan = Channel::from_shared(url.clone())
+            .map_err(|e| internal_datafusion_err!("Cannot create channel from url {url}: {e}"))?
+            .connect()
+            .await
+            .map_err(|e| internal_datafusion_err!("Cannot connect to channel {e}"))?;
+        let client = FlightClient::new(chan);
+
+        self.channels
+            .write()
+            .insert(addr.to_string(), client.inner().clone());
+        Ok(client)
+    }
+}
+
+static FACTORY: OnceLock<FlightClientFactory> = OnceLock::new();
+
 pub async fn get_client_map(
     stage_ids: Vec<usize>,
     stage_addrs: HashMap<usize, HashMap<usize, Vec<String>>>,
 ) -> Result<HashMap<(usize, usize), Mutex<Vec<FlightClient>>>, DataFusionError> {
     debug!("get_client_map : stage_ids: {stage_ids:?}");
 
-    // map of stage_id, partition -> Vec<FlightClient>
+    let factory = FACTORY.get_or_init(FlightClientFactory::new);
+
     let mut client_map = HashMap::new();
-
-    // a map of address -> FlightClient which we use while building the client map above
-    // so that we don't create duplicate clients for the same address.
-    let mut clients = HashMap::new();
-
-    fn clone_flight_client(c: &FlightClient) -> FlightClient {
-        let inner_clone = c.inner().clone();
-        FlightClient::new_from_inner(inner_clone)
-    }
 
     for stage_id in stage_ids {
         let partition_addrs = stage_addrs.get(&stage_id).ok_or(internal_datafusion_err!(
             "Cannot find stage addr {stage_id} in {:?}",
             stage_addrs
         ))?;
-        debug!(">collect_from_stage: stage {stage_id}: partition_addrs: {partition_addrs:?}");
 
         for (partition, addrs) in partition_addrs {
             let mut flight_clients = vec![];
             for addr in addrs {
-                let client = match clients.entry(addr) {
-                    Entry::Occupied(o) => clone_flight_client(o.get()),
-                    Entry::Vacant(v) => {
-                        let client = make_client(addr).await?;
-                        let clone = clone_flight_client(&client);
-                        v.insert(client);
-                        clone
-                    }
-                };
+                let client = factory.get_client(addr).await?;
                 flight_clients.push(client);
             }
             client_map.insert((stage_id, *partition), Mutex::new(flight_clients));

@@ -410,7 +410,7 @@ class DFRayContextSupervisor:
                 )
             )
         dbg_out = "\n".join([str(s) for s in stages])
-        log.debug(f"new_query internal stage datas {dbg_out}")
+        log.debug(f"new_query internal stage datas\n{dbg_out}")
 
         refs = []
         # now tell the processors what they are doing for this query
@@ -491,14 +491,14 @@ class DFRayDataFrame:
     def schema(self):
         return self.df.schema()
 
-    def execution_plan(self):
-        return self.df.execution_plan()
-
-    def logical_plan(self):
-        return self.df.logical_plan()
-
-    def optimized_logical_plan(self):
-        return self.df.optimized_logical_plan()
+    # def execution_plan(self):
+    #     return self.df.execution_plan()
+    #
+    # def logical_plan(self):
+    #     return self.df.logical_plan()
+    #
+    # def optimized_logical_plan(self):
+    #     return self.df.optimized_logical_plan()
 
     def prepare(self):
         t1 = time.time()

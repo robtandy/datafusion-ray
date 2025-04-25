@@ -16,12 +16,9 @@
 // under the License.
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
-use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread;
 
-use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -41,31 +38,21 @@ use prost::Message;
 use pyo3::conversion::FromPyObjectBound;
 use tokio::net::TcpListener;
 
-use tonic::service::interceptor::InterceptorLayer;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, async_trait};
-
-use datafusion::error::Result as DFResult;
 
 use arrow_flight::{Ticket, flight_service_server::FlightServiceServer};
 
 use pyo3::prelude::*;
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tower::ServiceBuilder;
-use tower_http::trace::TraceLayer;
-use tracing::Span;
 
-use crate::flight::{FlightHandler, FlightServ, FlightSqlHandler, FlightSqlServ};
-use crate::isolator::PartitionGroup;
-use crate::protobuf::{FlightTicketData, TicketStatementData};
+use crate::flight::{FlightSqlHandler, FlightSqlServ};
+use crate::protobuf::TicketStatementData;
 use crate::stage_reader::DFRayStageReaderExec;
-use crate::util::{
-    ResultExt, bytes_to_physical_plan, display_plan_with_partition_counts, input_stage_ids,
-    make_client, register_object_store_for_paths_in_plan, stream_from_stage, wait_for_future,
-};
+use crate::util::{ResultExt, stream_from_stage, wait_for_future};
 
 type Addrs = HashMap<usize, HashMap<usize, Vec<String>>>;
 
@@ -277,6 +264,26 @@ impl DFRayProxyService {
     /// returns a python coroutine that should be awaited
     pub fn serve<'a>(&mut self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
         let mut all_done_rx = self.all_done_rx.take().unwrap();
+
+        thread::spawn(move || {
+            loop {
+                thread::sleep(std::time::Duration::from_secs(2));
+                let deadlocks = parking_lot::deadlock::check_deadlock();
+                if deadlocks.is_empty() {
+                    println!("PROXY NO DEADLOCKS");
+                    continue;
+                }
+
+                println!("{} deadlocks detected", deadlocks.len());
+                for (i, threads) in deadlocks.iter().enumerate() {
+                    println!("Deadlock #{}", i);
+                    for t in threads {
+                        println!("Thread Id {:#?}", t.thread_id());
+                        println!("{:#?}", t.backtrace());
+                    }
+                }
+            }
+        });
 
         let signal = async move {
             all_done_rx
