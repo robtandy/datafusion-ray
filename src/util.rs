@@ -78,19 +78,18 @@ where
 }
 
 struct Spawner {
-    //    runtime: Arc<Runtime>,
+    runtime: Arc<Runtime>,
 }
 
 impl Spawner {
     fn new() -> Self {
-        // let runtime = Arc::new(
-        //     tokio::runtime::Builder::new_multi_thread()
-        //         .enable_all()
-        //         .build()
-        //         .expect("can build runtime"),
-        // );
-        // Self { runtime }
-        Self {}
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("can build runtime"),
+        );
+        Self { runtime }
     }
 
     fn wait_for<F>(&self, f: F) -> PyResult<F::Output>
@@ -100,8 +99,7 @@ impl Spawner {
     {
         let (tx, rx) = std::sync::mpsc::channel::<F::Output>();
         let fut = async move { tx.send(f.await) };
-        //let _guard = self.runtime.enter();
-        let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+        let _guard = self.runtime.enter();
 
         tokio::spawn(fut);
 
@@ -331,25 +329,6 @@ pub fn reporting_stream(
     };
 
     Box::pin(RecordBatchStreamAdapter::new(schema, out_stream)) as SendableRecordBatchStream
-}
-
-/// ParquetExecs do not correctly preserve their options when serialized to substrait.
-/// So we fix it here.
-///
-/// Walk the plan tree and update any ParquetExec nodes to set the options we need.
-/// We'll use this method until we are using a DataFusion version which includes thf
-/// fix https://github.com/apache/datafusion/pull/14465
-pub fn fix_plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    Ok(plan
-        .transform_up(|node| {
-            if let Some(parquet) = node.as_any().downcast_ref::<ParquetExec>() {
-                let new_parquet_node = parquet.clone().with_pushdown_filters(true);
-                Ok(Transformed::yes(Arc::new(new_parquet_node)))
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })?
-        .data)
 }
 
 struct FlightClientFactory {
@@ -643,22 +622,7 @@ pub(crate) fn register_object_store_for_paths_in_plan(
 ) -> Result<(), DataFusionError> {
     let check_plan = |plan: Arc<dyn ExecutionPlan>| -> Result<_, DataFusionError> {
         for input in plan.children().into_iter() {
-            if let Some(node) = input.as_any().downcast_ref::<ParquetExec>() {
-                let url = &node.base_config().object_store_url;
-                maybe_register_object_store(ctx, url.as_ref())?
-            } else if let Some(node) = input.as_any().downcast_ref::<CsvExec>() {
-                let url = &node.base_config().object_store_url;
-                maybe_register_object_store(ctx, url.as_ref())?
-            } else if let Some(node) = input.as_any().downcast_ref::<NdJsonExec>() {
-                let url = &node.base_config().object_store_url;
-                maybe_register_object_store(ctx, url.as_ref())?
-            } else if let Some(node) = input.as_any().downcast_ref::<AvroExec>() {
-                let url = &node.base_config().object_store_url;
-                maybe_register_object_store(ctx, url.as_ref())?
-            } else if let Some(node) = input.as_any().downcast_ref::<ArrowExec>() {
-                let url = &node.base_config().object_store_url;
-                maybe_register_object_store(ctx, url.as_ref())?
-            } else if let Some(node) = input.as_any().downcast_ref::<DataSourceExec>() {
+            if let Some(node) = input.as_any().downcast_ref::<DataSourceExec>() {
                 if let Some(config) = node.data_source().as_any().downcast_ref::<FileScanConfig>() {
                     let url = &config.object_store_url;
                     maybe_register_object_store(ctx, url.as_ref())?
@@ -690,7 +654,8 @@ pub(crate) fn maybe_register_object_store(
 
         let s3 = AmazonS3Builder::from_env()
             .with_bucket_name(bucket)
-            .build()?;
+            .build()
+            .map_err(|e| internal_datafusion_err!("Cannot create s3 object store from env: {e}"))?;
         (
             ObjectStoreUrl::parse(format!("s3://{bucket}"))?,
             Arc::new(s3) as Arc<dyn ObjectStore>,
@@ -702,7 +667,8 @@ pub(crate) fn maybe_register_object_store(
 
         let gs = GoogleCloudStorageBuilder::new()
             .with_bucket_name(bucket)
-            .build()?;
+            .build()
+            .map_err(|e| internal_datafusion_err!("Cannot create s3 object store from env: {e}"))?;
 
         (
             ObjectStoreUrl::parse(format!("gs://{bucket}"))?,
@@ -718,7 +684,8 @@ pub(crate) fn maybe_register_object_store(
 
         let http = HttpBuilder::new()
             .with_url(format!("{scheme}://{host}"))
-            .build()?;
+            .build()
+            .map_err(|e| internal_datafusion_err!("Cannot create s3 object store from env: {e}"))?;
 
         (
             ObjectStoreUrl::parse(format!("{scheme}://{host}"))?,
